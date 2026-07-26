@@ -24,8 +24,9 @@ kpsec run -e GITLAB_TOKEN=kp://gitlab/api -- glab api /user   # value only in th
 kpsec check kp://gitlab/api                                   # OK  len=26 sha256:1f3a9c02
 ```
 
-Anything the child process prints that matches a secret is replaced with
-`«redacted»` before it reaches the terminal.
+No command here prints a secret: values are resolved inside `kpsec` and reach the
+child through its environment, never through stdout or argv. `kpsec` is a shell
+script (PowerShell on Windows) — no language runtime to install.
 
 ## Why not just `keepassxc-cli show`
 
@@ -84,8 +85,8 @@ distribution packages and keyring specifics.
 kp://<group>/<entry>[#<Attribute>]
 ```
 
-`Password` is the default attribute. `UserName`, `Title`, `URL` and `Notes` are
-treated as public — they are not redacted from output.
+`Password` is the default attribute; `UserName`, `Title`, `URL` and `Notes` work
+the same way.
 
 ```
 kp://gitlab/api            # the password
@@ -120,27 +121,23 @@ kpsec run --env-file=.env.tpl -- docker compose up
 
 ## Building your own tools on it
 
-`kpsec_core.py` is importable. Resolve in-process and filter the child's output —
-that way the value never passes through an intermediate stdout:
+`kpsec` doubles as a library. Sourced with `KPSEC_LIB=1` it skips the command
+dispatch and exposes its functions, so your wrapper resolves a secret without it
+passing through an intermediate stdout:
 
-```python
-import os, subprocess, sys
-sys.path.insert(0, os.path.expanduser("~/.claude/skills/keepassxc-secrets/scripts"))  # or wherever it is installed
-import kpsec_core as kpsec
+```bash
+KPSEC_LIB=1 . "$HOME/.claude/skills/keepassxc-secrets/scripts/kpsec"
 
-cfg = kpsec.load_config()
-token = kpsec.resolve(cfg, "kp://gitlab/api")
-proc = subprocess.Popen(["glab", "api", "/user"],
-                        env={**os.environ, "GITLAB_TOKEN": token},
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-kpsec.stream_redacted(proc, [token])
-sys.exit(proc.wait())
+token=$(resolve "kp://gitlab/api")     # stays in this shell's memory
+export GITLAB_TOKEN="$token"           # export, not `env VAR=… cmd` — argv is public
+exec glab api /user
 ```
 
-Useful entry points: `load_config()`, `resolve(cfg, ref, soft=False)`,
-`build_env(cfg, pairs)`, `stream_redacted(proc, secrets)`, and the keyring
-helpers `keyctl_read/keyctl_write/keyctl_unlink` for caching derived
-credentials such as session tokens.
+Useful entry points: `resolve` / `resolve_soft`, `kp` (runs `keepassxc-cli` with
+the master password on stdin), `master_get`, and the cache helpers
+`cache_get` / `cache_put` / `cache_drop` for derived credentials such as session
+tokens. The ArgoCD login helper in the author's dotfiles is built exactly this
+way.
 
 ## Security
 
@@ -152,21 +149,24 @@ The short version:
 - Agent secrets live in their own `agents.kdbx`, not in your personal database.
 - The master password is never written to disk; the cache is kernel memory with
   a TTL.
-- Redaction keeps values out of transcripts. It does not stop an agent that is
-  allowed to run arbitrary commands from exfiltrating a secret — restrict that
-  with your harness's permission rules; ready-made ones are in the same document.
+- `kpsec run` execs the command without touching its output, so a tool that
+  prints its own credentials still leaks them. That is a deliberate trade —
+  see the same document.
+- Nothing here stops an agent that is allowed to run arbitrary commands from
+  exfiltrating a resolved secret — restrict that with your harness's permission
+  rules; ready-made ones are in the same document.
 
 ## Platforms
 
-`keepassxc-cli` ≥ 2.7 and `python3` everywhere. What differs is where the master
-key lives and how you get asked for it:
+`keepassxc-cli` ≥ 2.7 and a shell. What differs is where the master key lives and
+how you get asked for it:
 
 | | Master key store | Prompt | Extra |
 |---|---|---|---|
-| Linux, KDE/GNOME | Secret Service, unlocked at login via PAM | kdialog / zenity | `keyutils` for the TTL cache |
+| Linux, KDE/GNOME | Secret Service via `secret-tool`, unlocked at login by PAM | kdialog / zenity | `keyutils` for the TTL cache |
 | Linux, Hyprland/Sway/i3 | KeePassXC's own Secret Service, or standalone gnome-keyring | pinentry (Qt/GTK/curses) | see [`platforms.md`](skills/keepassxc-secrets/references/platforms.md) |
 | macOS | login Keychain via `security` | osascript dialog | CLI lives inside the app bundle |
-| Windows | Credential Manager via `keyring` | `Get-Credential` dialog | install with `install.ps1` |
+| Windows | Credential Manager via the native API | `Get-Credential` dialog | `kpsec.ps1`, installed by `install.ps1` |
 
 `kpsec status` prints which backend is actually in use; `KPSEC_KEYRING` pins one.
 On a minimal Linux session the `org.freedesktop.secrets` slot is usually free,

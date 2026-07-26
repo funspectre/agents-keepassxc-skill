@@ -24,8 +24,10 @@ kpsec run -e GITLAB_TOKEN=kp://gitlab/api -- glab api /user   # значение
 kpsec check kp://gitlab/api                                   # OK  len=26 sha256:1f3a9c02
 ```
 
-Всё, что дочерний процесс напечатает и что совпадёт с секретом, заменяется на
-`«redacted»` до того, как попадёт в терминал.
+Ни одна команда здесь не печатает секрет: значения резолвятся внутри `kpsec` и
+попадают в дочерний процесс через окружение, минуя stdout и argv. Сам `kpsec` —
+шелл-скрипт (на Windows — PowerShell), никакого языкового рантайма ставить не
+нужно.
 
 ## Почему недостаточно `keepassxc-cli show`
 
@@ -84,8 +86,8 @@ kpsec init            # создаёт ~/.pass/agents.kdbx и кладёт ма�
 kp://<группа>/<запись>[#<Атрибут>]
 ```
 
-Атрибут по умолчанию — `Password`. `UserName`, `Title`, `URL` и `Notes` считаются
-публичными и из вывода не вырезаются.
+Атрибут по умолчанию — `Password`; `UserName`, `Title`, `URL` и `Notes`
+запрашиваются точно так же.
 
 ```
 kp://gitlab/api            # пароль
@@ -120,27 +122,22 @@ kpsec run --env-file=.env.tpl -- docker compose up
 
 ## Свои инструменты поверх
 
-`kpsec_core.py` импортируется как модуль. Резолви секрет внутри процесса и
-фильтруй вывод потомка — тогда значение не проходит через промежуточный stdout:
+`kpsec` работает и как библиотека. Если заинклюдить его с `KPSEC_LIB=1`, разбор
+команд пропускается и остаются доступны его функции — так обёртка резолвит
+секрет, не прогоняя значение через промежуточный stdout:
 
-```python
-import os, subprocess, sys
-sys.path.insert(0, os.path.expanduser("~/.claude/skills/keepassxc-secrets/scripts"))  # или куда установлено
-import kpsec_core as kpsec
+```bash
+KPSEC_LIB=1 . "$HOME/.claude/skills/keepassxc-secrets/scripts/kpsec"
 
-cfg = kpsec.load_config()
-token = kpsec.resolve(cfg, "kp://gitlab/api")
-proc = subprocess.Popen(["glab", "api", "/user"],
-                        env={**os.environ, "GITLAB_TOKEN": token},
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-kpsec.stream_redacted(proc, [token])
-sys.exit(proc.wait())
+token=$(resolve "kp://gitlab/api")     # остаётся в памяти этого шелла
+export GITLAB_TOKEN="$token"           # именно export, а не `env VAR=… cmd` — argv виден всем
+exec glab api /user
 ```
 
-Полезные точки входа: `load_config()`, `resolve(cfg, ref, soft=False)`,
-`build_env(cfg, pairs)`, `stream_redacted(proc, secrets)` и хелперы кошелька
-`keyctl_read/keyctl_write/keyctl_unlink` — для кэширования производных
-credentials вроде сессионных токенов.
+Полезные точки входа: `resolve` / `resolve_soft`, `kp` (запускает
+`keepassxc-cli` с мастер-паролем на stdin), `master_get` и хелперы кэша
+`cache_get` / `cache_put` / `cache_drop` — для производных credentials вроде
+сессионных токенов.
 
 ## Безопасность
 
@@ -151,21 +148,24 @@ credentials вроде сессионных токенов.
 
 - Секреты агентов живут в отдельной `agents.kdbx`, а не в твоей личной базе.
 - Мастер-пароль никогда не пишется на диск; кэш — память ядра с TTL.
-- Редакция вывода держит значения вне транскриптов, но не мешает агенту, которому
-  разрешено выполнять произвольные команды, вынести секрет наружу. Это
-  ограничивается правилами доступа твоего харнесса — готовые лежат в том же файле.
+- `kpsec run` делает exec и не трогает вывод команды, поэтому утилита, которая
+  сама печатает свои credentials, всё равно их засветит. Это осознанный
+  компромисс — разобран в том же файле.
+- Ничто здесь не мешает агенту, которому разрешено выполнять произвольные
+  команды, вынести уже полученный секрет наружу. Это ограничивается правилами
+  доступа твоего харнесса — готовые лежат в том же файле.
 
 ## Платформы
 
-`keepassxc-cli` ≥ 2.7 и `python3` нужны везде. Различается то, где лежит
-мастер-ключ и как у тебя его спрашивают:
+`keepassxc-cli` ≥ 2.7 и шелл. Различается то, где лежит мастер-ключ и как у тебя
+его спрашивают:
 
 | | Хранилище ключа | Промпт | Дополнительно |
 |---|---|---|---|
-| Linux, KDE/GNOME | Secret Service, разблокируется при логине через PAM | kdialog / zenity | `keyutils` для кэша с TTL |
+| Linux, KDE/GNOME | Secret Service через `secret-tool`, разблокируется при логине через PAM | kdialog / zenity | `keyutils` для кэша с TTL |
 | Linux, Hyprland/Sway/i3 | собственный Secret Service KeePassXC или отдельный gnome-keyring | pinentry (Qt/GTK/curses) | см. [`platforms.md`](skills/keepassxc-secrets/references/platforms.md) |
 | macOS | login Keychain через `security` | диалог osascript | CLI лежит внутри app bundle |
-| Windows | Credential Manager через `keyring` | диалог `Get-Credential` | ставить через `install.ps1` |
+| Windows | Credential Manager через нативный API | диалог `Get-Credential` | `kpsec.ps1`, ставится через `install.ps1` |
 
 `kpsec status` печатает, какой бэкенд используется на самом деле; `KPSEC_KEYRING`
 закрепляет конкретный. В минималистичной Linux-сессии слот

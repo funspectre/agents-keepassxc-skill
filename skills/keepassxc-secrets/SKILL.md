@@ -2,21 +2,24 @@
 name: keepassxc-secrets
 description: Use when a command needs a password, token or API key that lives in a local KeePassXC database — resolve it into the command's environment without ever printing the value. Covers kp:// secret references and kpsec run/check/ls/add.
 requires:
-  bins: ["keepassxc-cli", "python3"]
+  bins: ["keepassxc-cli"]
 ---
 
 # keepassxc-secrets — secrets from KeePassXC without leaking them
 
-Agent-facing secrets live in a **separate database**, by default
-`~/.pass/agents.kdbx`. Its master password is stored in the desktop
-Secret Service keyring (unlocked at login) and cached in the kernel keyring, so
-the scripts run without prompting. The user's main database stays out of reach —
-that is what bounds the blast radius.
+Agent-facing secrets live in a **separate database**, by default `~/.pass/agents.kdbx`.
+Its master password is stored in the system keyring (Secret Service on Linux,
+Keychain on macOS, Credential Manager on Windows) and, on Linux, cached in the
+kernel keyring, so the commands run without prompting. The user's main database
+stays out of reach — that is what bounds the blast radius.
+
+`kpsec` is a shell script (`kpsec.ps1` on Windows). No runtime beyond the shell.
 
 ## The one rule
 
-**A secret value must never reach the command output.** It is resolved inside a
-child process, and if that process prints it, it is replaced with `«redacted»`.
+**Never print a secret and never call `keepassxc-cli` directly.** Its output goes
+straight into the transcript. `kpsec` resolves values inside its own process and
+hands them to the child through the environment — they never touch stdout or argv.
 
 Never:
 
@@ -33,23 +36,26 @@ kpsec run -e TOKEN=kp://gitlab/api -- some-cli   # secret only in the child's en
 kpsec check kp://gitlab/api                      # verify without revealing
 ```
 
+`kpsec run` does not filter what the child prints. If a command is known to echo
+its credentials (debug output, verbose HTTP logs), do not run it under `kpsec run`
+in an agent session.
+
 ## Reference format
 
 ```
 kp://<group>/<entry>[#<Attribute>]
 ```
 
-The default attribute is `Password`. Public attributes (`UserName`, `Title`,
-`URL`, `Notes`) are not redacted in output; everything else is.
+The default attribute is `Password`.
 
 ## Commands
 
 ```bash
-kpsec status                              # database, cache, unlock check
+kpsec status                              # database, keyring backend, unlock check
 kpsec ls                                  # entries, without values
 kpsec check kp://gitlab/api               # OK + length and sha256 prefix
 kpsec run -e TOKEN=kp://gitlab/api -- glab api /user
-kpsec run --env-file=.env.tpl -- docker compose up
+kpsec run --env-file .env.tpl -- docker compose up
 kpsec add gitlab/api -u alice             # value typed by a human in a GUI dialog
 kpsec add gitlab/api -g -L 32             # generate a random value
 kpsec clip kp://gitlab/api                # clipboard for 15 seconds
@@ -81,19 +87,16 @@ command line. Verify with `kpsec check kp://<group>/<entry>`.
 
 ## Building tools on top
 
-Wrappers that need a secret should import the core rather than shell out to
-`kpsec` — that keeps values out of any intermediate stdout:
+`kpsec` doubles as a library. Sourcing it with `KPSEC_LIB=1` skips the command
+dispatch and exposes `resolve`, `kp`, `master_get` and the keyring helpers, so a
+wrapper can resolve a secret without it passing through an intermediate stdout:
 
-```python
-import sys
-sys.path.insert(0, "/path/to/keepassxc-secrets/scripts")
-import kpsec_core as kpsec
+```bash
+KPSEC_LIB=1 . "$HOME/.claude/skills/keepassxc-secrets/scripts/kpsec"
 
-cfg = kpsec.load_config()
-token = kpsec.resolve(cfg, "kp://gitlab/api")   # stays in memory
-proc = subprocess.Popen(cmd, env={**os.environ, "TOKEN": token},
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-kpsec.stream_redacted(proc, [token])            # filter the child's output
+token=$(resolve "kp://gitlab/api")     # stays in this shell's memory
+export GITLAB_TOKEN="$token"           # export, not `env VAR=… cmd` — argv is public
+exec glab api /user
 ```
 
 ## Troubleshooting
@@ -103,10 +106,10 @@ kpsec.stream_redacted(proc, [token])            # filter the child's output
 - `unlock: FAILED` — the stored key does not match the database. After moving the
   `.kdbx`, re-point the key with `kpsec relocate <new-path>`.
 - Prompts need a graphical session; without one they are skipped rather than
-  blocking. For headless runs set `KPSEC_NO_GUI=1` — the scripts then fail with
+  blocking. For headless runs set `KPSEC_NO_GUI=1` — the commands then fail with
   exit code 4.
 - Environment: `KPSEC_DB`, `KPSEC_TTL`, `KPSEC_CONFIG`, `KPSEC_KEYRING`
-  (`secretservice` / `keychain` / `keyring` / `none`), `KPSEC_KEEPASSXC_CLI`,
+  (`secretservice` / `keychain` / `none`), `KPSEC_KEEPASSXC_CLI`,
   `KPSEC_PROMPT_TIMEOUT`.
 - See `references/security.md` for the threat model, `references/setup.md` for
   installation and `references/platforms.md` for Linux/macOS/Windows specifics.

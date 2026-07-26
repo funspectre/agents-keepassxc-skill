@@ -2,30 +2,33 @@
 
 ## Requirements
 
+The scripts are `bash` (Linux, macOS) and PowerShell (Windows). There is no
+language runtime to install.
+
 | Component | Why | Required |
 |---|---|---|
 | `keepassxc-cli` ≥ 2.7 | reads the database | yes |
-| `python3` | the scripts | yes |
-| `python3-secretstorage` | master password in the desktop keyring (Linux) | Linux |
-| `keyring` (pip) | same, on Windows; fallback elsewhere | Windows |
+| `secret-tool` (libsecret) | master password in the desktop keyring | Linux |
+| `security` | same, via the login Keychain | ships with macOS |
+| Credential Manager | same, via the native API | ships with Windows |
 | `keyctl` (keyutils) | in-memory cache with a TTL (Linux only) | optional |
 | `kdialog`, `zenity` or `pinentry` | prompts and one-off displays | optional |
 
 ```bash
 # Debian/Ubuntu
-sudo apt install keepassxc python3-secretstorage keyutils
+sudo apt install keepassxc libsecret-tools keyutils
 
 # openSUSE
-sudo zypper install keepassxc python3-SecretStorage keyutils
+sudo zypper install keepassxc secret-tool keyutils
 
 # Fedora
-sudo dnf install keepassxc python3-secretstorage keyutils
+sudo dnf install keepassxc libsecret keyutils
 
-# macOS
+# macOS — Keychain and osascript are already there
 brew install keepassxc
 
-# Windows
-winget install KeePassXCTeam.KeePassXC; pip install keyring
+# Windows — Credential Manager and PowerShell are already there
+winget install KeePassXCTeam.KeePassXC
 ```
 
 macOS uses the login Keychain and Windows the Credential Manager — see
@@ -66,8 +69,7 @@ Check what is running:
 
 ```bash
 busctl --user list | grep secrets
-python3 -c "import secretstorage; b=secretstorage.dbus_init(); \
-  c=secretstorage.get_default_collection(b); print(c.get_label(), c.is_locked())"
+secret-tool search --all application kpsec
 ```
 
 If the collection is locked, the scripts fall back to a GUI password prompt.

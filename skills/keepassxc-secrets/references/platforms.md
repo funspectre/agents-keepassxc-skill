@@ -2,13 +2,17 @@
 
 Two things are platform-specific: **where the master password is stored** and
 **how the user is asked for it** when the store has no key yet. Everything else —
-`keepassxc-cli`, reference resolution, redaction — is the same everywhere.
+`keepassxc-cli`, reference resolution, environment injection — is the same
+everywhere.
 
 | | Master key store | Prompt | In-memory cache |
 |---|---|---|---|
-| Linux / BSD | Secret Service (`secretstorage`) | kdialog, zenity, pinentry | kernel keyring (`keyctl`) |
+| Linux / BSD | Secret Service (`secret-tool`) | kdialog, zenity, pinentry | kernel keyring (`keyctl`) |
 | macOS | Keychain (`security`) | osascript dialog | none — Keychain is already fast |
-| Windows | Credential Manager (`keyring`) | `Get-Credential` dialog | none |
+| Windows | Credential Manager (native API) | `Get-Credential` dialog | none |
+
+Linux and macOS run `scripts/kpsec` (bash); Windows runs `scripts/kpsec.ps1`
+(PowerShell 5.1+, which ships with the OS). Neither needs a language runtime.
 
 `kpsec status` prints the backend actually in use. `KPSEC_KEYRING` pins one
 (`secretservice`, `keychain`, `keyring`, `none`); `none` disables the store
@@ -100,16 +104,19 @@ to the Keychain, which is fast enough.
 
 ```powershell
 winget install KeePassXCTeam.KeePassXC
-pip install keyring
 .\install.ps1
 ```
 
 `keepassxc-cli.exe` is not added to PATH by the installer, so `kpsec` also checks
 `%ProgramFiles%\KeePassXC\keepassxc-cli.exe` and the x86 variant.
 
-The master key goes into Windows Credential Manager through the `keyring`
-package (DPAPI-protected, per-user). Prompts use `Get-Credential`, which draws a
-masked dialog.
+The master key goes into Windows Credential Manager as a generic credential
+(DPAPI-protected, per-user) through the `CredRead`/`CredWrite` API, called
+directly from PowerShell — no modules to install. Prompts use `Get-Credential`,
+which draws a masked dialog.
+
+Run the commands as `powershell -File <skill>\scripts\kpsec.ps1 <command>`, or
+dot-source the script if you want the functions in your session.
 
 `install.ps1` prefers symlinks; creating them requires Developer Mode or an
 elevated shell, so it silently falls back to copying. With copies, `git pull` no

@@ -4,8 +4,8 @@
 
 **Secrets ending up in the model context.** Anything an agent's shell prints is
 read by the model and may be persisted in a transcript. Every path here keeps
-values out of stdout: they are resolved in-process and passed to the child via
-its environment, and the child's output is filtered.
+values out of stdout: they are resolved inside `kpsec` and passed to the child
+through its environment. No command in this skill prints a secret.
 
 **Secrets ending up in process arguments.** `/proc/<pid>/cmdline` is world
 readable on a default Linux install. Any `tool --password X` exposes the password
@@ -27,10 +27,15 @@ there, not a lifetime of personal credentials.
   keyring and query the Secret Service just as these scripts do. On a desktop
   where the keyring auto-unlocks at login, "unlocked" means unlocked for
   everything running as you.
+- **A child process that prints its own credentials.** `kpsec run` execs the
+  command and does not touch its output, so a tool with verbose HTTP logging or a
+  debug mode can put the secret in the transcript itself. Filtering was
+  deliberately dropped: doing it reliably means keeping the child's stdout in a
+  pipe, which breaks interactive tools and progress output, and it protects
+  against carelessness rather than against an attacker. Know your commands.
 - **An agent that runs an arbitrary command with a resolved secret.** If the
   agent can call `kpsec run`, it can pass the secret to a program of its
-  choosing. Redaction hides the value from the transcript; it does not stop
-  exfiltration. Constrain that with permission rules, not with this skill.
+  choosing. Constrain that with permission rules, not with this skill.
 - **Secrets already leaked elsewhere** — CI variables, dotfiles, shell history
   from before the migration.
 
@@ -58,8 +63,9 @@ the scripts fall back to the Secret Service on each call.
 
 Whatever the harness, the shape is the same: allow `kpsec`, deny everything that
 reads the database or the keyring directly. Denying `keepassxc-cli` is the
-important half — it removes the obvious way to print a password. The wrappers
-invoke that binary from inside Python, so they keep working.
+important half — it removes the obvious way to print a password. `kpsec` invokes
+that binary itself, so the deny rule (which applies to the agent's own shell
+commands) does not get in its way.
 
 **Claude Code** — `~/.claude/settings.json`:
 

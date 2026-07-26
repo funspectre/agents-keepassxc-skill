@@ -76,17 +76,10 @@ function Write-AgentsBlock($file) {
 
 function Test-Deps {
     $missing = @()
-    if (-not (Get-Command python3, python -ErrorAction SilentlyContinue)) { $missing += "python" }
-    $cli = Get-Command keepassxc-cli -ErrorAction SilentlyContinue
-    if (-not $cli) {
+    if (-not (Get-Command keepassxc-cli -ErrorAction SilentlyContinue)) {
         $paths = @("$env:ProgramFiles\KeePassXC\keepassxc-cli.exe",
                    "${env:ProgramFiles(x86)}\KeePassXC\keepassxc-cli.exe")
         if (-not ($paths | Where-Object { Test-Path $_ })) { $missing += "keepassxc-cli" }
-    }
-    $py = (Get-Command python3, python -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if ($py) {
-        & $py -c "import keyring" 2>$null
-        if ($LASTEXITCODE -ne 0) { $missing += "python keyring (pip install keyring)" }
     }
     if ($missing) {
         Write-Error "missing dependencies: $($missing -join ', ')`nsee skills\$Skill\references\setup.md"
@@ -134,4 +127,4 @@ if ($Project) {
     Write-AgentsBlock (Join-Path $Project "AGENTS.md")
 }
 
-Write-Host "`nNext:`n  python $Src\scripts\kpsec init`n  python $Src\scripts\kpsec status"
+Write-Host "`nNext:`n  powershell -File $Src\scripts\kpsec.ps1 init`n  powershell -File $Src\scripts\kpsec.ps1 status"

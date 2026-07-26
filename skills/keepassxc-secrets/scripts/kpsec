@@ -1,9 +1,431 @@
-#!/usr/bin/env python3
-import pathlib
-import sys
+#!/usr/bin/env bash
+# kpsec — use secrets from a local KeePassXC database without printing them.
+# Linux and macOS. Windows: see kpsec.ps1. Kept compatible with bash 3.2 (macOS).
+set -euo pipefail
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+KPSEC_CONFIG="${KPSEC_CONFIG:-$HOME/.config/kpsec/config}"
+[ -f "$KPSEC_CONFIG" ] && . "$KPSEC_CONFIG"
 
-from kpsec_core import main
+KPSEC_DB="${KPSEC_DB:-$HOME/.pass/agents.kdbx}"
+KPSEC_DB="${KPSEC_DB/#\~/$HOME}"
+KPSEC_TTL="${KPSEC_TTL:-900}"
+KEYRING_SERVICE="kpsec master key"
+PROMPT_TIMEOUT="${KPSEC_PROMPT_TIMEOUT:-120}"
 
-main()
+die() { printf 'kpsec: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+keepassxc_bin() {
+    if [ -n "${KPSEC_KEEPASSXC_CLI:-}" ]; then printf '%s\n' "$KPSEC_KEEPASSXC_CLI"; return; fi
+    if command -v keepassxc-cli >/dev/null; then command -v keepassxc-cli; return; fi
+    for c in /Applications/KeePassXC.app/Contents/MacOS/keepassxc-cli \
+             /opt/homebrew/bin/keepassxc-cli; do
+        [ -x "$c" ] && { printf '%s\n' "$c"; return; }
+    done
+    printf 'keepassxc-cli\n'
+}
+
+sha_prefix() {
+    if command -v sha256sum >/dev/null; then sha256sum | cut -c1-8
+    else shasum -a 256 | cut -c1-8; fi
+}
+
+# ---------------------------------------------------------------- keyring ---
+# The master key is keyed by database path, so a moved .kdbx needs `relocate`.
+
+keyring_backend() {
+    case "${KPSEC_KEYRING:-auto}" in
+        none) printf 'none\n'; return ;;
+        secretservice|keychain) printf '%s\n' "$KPSEC_KEYRING"; return ;;
+    esac
+    if [ "$(uname -s)" = "Darwin" ]; then printf 'keychain\n'
+    elif command -v secret-tool >/dev/null; then printf 'secretservice\n'
+    else printf 'none\n'; fi
+}
+
+keyring_get() {
+    case "$(keyring_backend)" in
+        keychain) security find-generic-password -w -s "$KEYRING_SERVICE" -a "$KPSEC_DB" 2>/dev/null ;;
+        secretservice) secret-tool lookup application kpsec db "$KPSEC_DB" 2>/dev/null ;;
+        *) return 1 ;;
+    esac
+}
+
+keyring_put() {
+    case "$(keyring_backend)" in
+        keychain)
+            security add-generic-password -U -s "$KEYRING_SERVICE" -a "$KPSEC_DB" \
+                -w "$1" -T /usr/bin/security ;;
+        secretservice)
+            printf '%s' "$1" | secret-tool store --label="$KEYRING_SERVICE ($(basename "$KPSEC_DB"))" \
+                application kpsec db "$KPSEC_DB" ;;
+        *) die "no keyring backend: install secret-tool (Linux) or use macOS Keychain" 4 ;;
+    esac
+}
+
+keyring_del() {
+    case "$(keyring_backend)" in
+        keychain) security delete-generic-password -s "$KEYRING_SERVICE" -a "$KPSEC_DB" >/dev/null 2>&1 ;;
+        secretservice) secret-tool clear application kpsec db "$KPSEC_DB" 2>/dev/null ;;
+        *) return 1 ;;
+    esac
+}
+
+# ------------------------------------------------------------------ cache ---
+# Linux kernel keyring: memory only, expires on its own. Absent elsewhere.
+
+cache_desc() { printf 'kpsec:master:%s\n' "$(printf '%s' "$KPSEC_DB" | sha_prefix)"; }
+
+cache_get() {
+    command -v keyctl >/dev/null || return 1
+    local id
+    id=$(keyctl search @u user "$(cache_desc)" 2>/dev/null) || return 1
+    keyctl pipe "$id" 2>/dev/null
+}
+
+cache_put() {
+    command -v keyctl >/dev/null || return 0
+    [ "$KPSEC_TTL" -gt 0 ] || return 0
+    local id
+    id=$(printf '%s' "$1" | keyctl padd user "$(cache_desc)" @u 2>/dev/null) || return 0
+    keyctl timeout "$id" "$KPSEC_TTL" >/dev/null 2>&1 || true
+}
+
+cache_drop() {
+    command -v keyctl >/dev/null || return 1
+    local id
+    id=$(keyctl search @u user "$(cache_desc)" 2>/dev/null) || return 1
+    keyctl unlink "$id" @u >/dev/null 2>&1
+}
+
+# ----------------------------------------------------------------- prompt ---
+
+graphical() { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }
+
+with_timeout() {
+    if command -v timeout >/dev/null; then timeout "$PROMPT_TIMEOUT" "$@"
+    elif command -v gtimeout >/dev/null; then gtimeout "$PROMPT_TIMEOUT" "$@"
+    else "$@"; fi
+}
+
+prompt_secret() {
+    local title=$1 text=$2 out exe
+    [ -n "${KPSEC_NO_GUI:-}" ] && return 1
+    if [ "$(uname -s)" = "Darwin" ]; then
+        out=$(with_timeout osascript -e \
+            "display dialog \"$text\" with title \"$title\" default answer \"\" with hidden answer" \
+            2>/dev/null) || return 1
+        printf '%s\n' "${out#*text returned:}"
+        return 0
+    fi
+    if graphical && command -v kdialog >/dev/null; then
+        with_timeout kdialog --title "$title" --password "$text" 2>/dev/null
+        return
+    fi
+    if graphical && command -v zenity >/dev/null; then
+        with_timeout zenity --password --title "$title" 2>/dev/null
+        return
+    fi
+    # pinentry picks Qt/GTK/curses itself; skip it where it would block on a non-tty
+    graphical || [ -t 0 ] || return 1
+    for exe in pinentry pinentry-qt pinentry-gnome3 pinentry-gtk-2 pinentry-curses; do
+        command -v "$exe" >/dev/null || continue
+        printf 'SETTITLE %s\nSETDESC %s\nSETPROMPT Password:\nGETPIN\nBYE\n' "$title" "$text" |
+            with_timeout "$exe" 2>/dev/null |
+            awk '/^D /{ sub(/^D /, ""); print; exit }'
+        return 0
+    done
+    return 1
+}
+
+show_message() {
+    [ -n "${KPSEC_NO_GUI:-}" ] && return 0
+    if [ "$(uname -s)" = "Darwin" ]; then
+        with_timeout osascript -e \
+            "display dialog \"$2\" with title \"$1\" buttons {\"OK\"} default button \"OK\"" \
+            >/dev/null 2>&1 || true
+        return 0
+    fi
+    graphical || return 0
+    if command -v kdialog >/dev/null; then
+        with_timeout kdialog --title "$1" --msgbox "$2" >/dev/null 2>&1 || true
+    elif command -v zenity >/dev/null; then
+        with_timeout zenity --info --title "$1" --text "$2" >/dev/null 2>&1 || true
+    fi
+}
+
+# -------------------------------------------------------------- keepassxc ---
+
+master_get() {
+    local master
+    if master=$(cache_get) && [ -n "$master" ]; then printf '%s' "$master"; return 0; fi
+    if master=$(keyring_get) && [ -n "$master" ]; then
+        cache_put "$master"; printf '%s' "$master"; return 0
+    fi
+    master=$(prompt_secret "kpsec" "Master password for $(basename "$KPSEC_DB")") || return 1
+    [ -n "$master" ] || return 1
+    cache_put "$master"
+    printf '%s' "$master"
+}
+
+# kp <keepassxc-cli args...> — the master password goes in on stdin, never in argv
+kp() {
+    local master
+    master=$(master_get) || die "cannot obtain the database master password" 4
+    printf '%s\n' "$master" | "$(keepassxc_bin)" "$@"
+}
+
+kp_quiet() {
+    local master
+    master=$(master_get) || return 4
+    printf '%s\n' "$master" | "$(keepassxc_bin)" "$@" 2>/dev/null
+}
+
+parse_ref() {
+    case "$1" in
+        kp://*) ;;
+        *) die "malformed reference: $1 (expected kp://group/entry#Attribute)" 2 ;;
+    esac
+    local ref=${1#kp://}
+    REF_PATH=${ref%%#*}
+    if [ "$ref" = "$REF_PATH" ]; then REF_ATTR=Password; else REF_ATTR=${ref#*#}; fi
+}
+
+resolve() {
+    parse_ref "$1"
+    kp show -q -s -a "$REF_ATTR" "$KPSEC_DB" "$REF_PATH"
+}
+
+resolve_soft() {
+    parse_ref "$1"
+    kp_quiet show -q -s -a "$REF_ATTR" "$KPSEC_DB" "$REF_PATH"
+}
+
+# --------------------------------------------------------------- commands ---
+
+cmd_status() {
+    local state key c
+    [ -f "$KPSEC_DB" ] && state=present || state=MISSING
+    printf 'db:             %s (%s)\n' "$KPSEC_DB" "$state"
+    printf 'keepassxc-cli:  %s\n' "$(keepassxc_bin)"
+    if keyring_get >/dev/null 2>&1; then key="key present"; else key="no key"; fi
+    printf 'keyring:        %s (%s)\n' "$(keyring_backend)" "$key"
+    if command -v keyctl >/dev/null; then
+        cache_get >/dev/null 2>&1 && c=warm || c=empty
+        printf 'cache:          %s, ttl %ss\n' "$c" "$KPSEC_TTL"
+    else
+        printf 'cache:          unsupported on this platform\n'
+    fi
+    if [ -f "$KPSEC_DB" ]; then
+        if kp_quiet db-info -q "$KPSEC_DB" >/dev/null; then printf 'unlock:         ok\n'
+        else printf 'unlock:         FAILED\n'; fi
+    fi
+}
+
+cmd_ls() { kp ls -q -R -f "$KPSEC_DB" "${1:-/}"; }
+
+cmd_check() {
+    local rc=0 ref value
+    for ref in "$@"; do
+        if value=$(resolve_soft "$ref") && [ -n "$value" ]; then
+            printf 'OK   %s  len=%s sha256:%s\n' "$ref" "${#value}" \
+                "$(printf '%s' "$value" | sha_prefix)"
+        else
+            printf 'FAIL %s  (no such entry or attribute)\n' "$ref"
+            rc=1
+        fi
+    done
+    return $rc
+}
+
+cmd_run() {
+    local env_file="" pairs="" line pair name value
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --env-file) env_file=$2; shift 2 ;;
+            --env-file=*) env_file=${1#*=}; shift ;;
+            -e|--env) pairs="$pairs$2"$'\n'; shift 2 ;;
+            --) shift; break ;;
+            *) break ;;
+        esac
+    done
+    [ $# -gt 0 ] || die "no command given after --" 2
+
+    if [ -n "$env_file" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|\#*) continue ;; esac
+            pairs="$pairs$line"$'\n'
+        done < "$env_file"
+    fi
+
+    while IFS= read -r pair; do
+        [ -n "$pair" ] || continue
+        name=${pair%%=*}
+        value=${pair#*=}
+        value=${value%\"}; value=${value#\"}
+        value=${value%\'}; value=${value#\'}
+        case "$value" in
+            kp://*) value=$(resolve "$value") ;;
+        esac
+        # export keeps the value in this shell's memory; it never reaches argv
+        export "$name=$value"
+    done <<< "$pairs"
+
+    exec "$@"
+}
+
+cmd_add() {
+    local path="" username="" url="" generate=0 length=32 from_stdin=0
+    local group prefix part verb value master
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -u|--username) username=$2; shift 2 ;;
+            --url) url=$2; shift 2 ;;
+            -g|--generate) generate=1; shift ;;
+            -L|--length) length=$2; shift 2 ;;
+            --stdin) from_stdin=1; shift ;;
+            -*) die "unknown option: $1" 2 ;;
+            *) path=$1; shift ;;
+        esac
+    done
+    [ -n "$path" ] || die "usage: kpsec add <group>/<entry> [-u user] [--url u] [-g]" 2
+
+    group=${path%/*}
+    if [ "$group" != "$path" ]; then
+        prefix=""
+        while [ -n "$group" ]; do
+            part=${group%%/*}
+            prefix="${prefix:+$prefix/}$part"
+            kp_quiet mkdir -q "$KPSEC_DB" "$prefix" >/dev/null || true
+            [ "$group" = "$part" ] && break
+            group=${group#*/}
+        done
+    fi
+
+    if resolve_soft "kp://$path#Title" >/dev/null 2>&1; then verb=edit; else verb=add; fi
+    set -- "$verb" -q
+    [ -n "$username" ] && set -- "$@" -u "$username"
+    [ -n "$url" ] && set -- "$@" --url "$url"
+
+    if [ "$generate" = 1 ]; then
+        kp "$@" -g -L "$length" -l -U -n -s "$KPSEC_DB" "$path"
+    else
+        if [ "$from_stdin" = 1 ]; then
+            IFS= read -r value
+        else
+            value=$(prompt_secret "kpsec" "Value for $path") || die "no value entered" 3
+        fi
+        [ -n "$value" ] || die "no value entered" 3
+        master=$(master_get) || die "cannot obtain the database master password" 4
+        printf '%s\n%s\n' "$master" "$value" | "$(keepassxc_bin)" "$@" -p "$KPSEC_DB" "$path"
+    fi
+    printf '%sed %s\n' "$verb" "$path"
+}
+
+cmd_clip() {
+    parse_ref "$1"
+    kp clip -q -a "$REF_ATTR" "$KPSEC_DB" "$REF_PATH" "${2:-15}"
+    printf 'copied %s to clipboard for %ss\n' "$1" "${2:-15}"
+}
+
+cmd_init() {
+    local master
+    [ -e "$KPSEC_DB" ] && die "database already exists: $KPSEC_DB" 3
+    mkdir -p "$(dirname "$KPSEC_DB")"
+    master=$("$(keepassxc_bin)" generate -L 40 -l -U -n)
+    printf '%s\n%s\n' "$master" "$master" |
+        "$(keepassxc_bin)" db-create -q -p "$KPSEC_DB" || die "db-create failed" 5
+    chmod 600 "$KPSEC_DB"
+    keyring_put "$master"
+    cache_put "$master"
+    show_message "kpsec master password" "Created $KPSEC_DB
+
+Master password (back it up in your main KeePassXC):
+
+$master
+
+It is also stored in the system keyring, which is where the scripts read it from."
+    printf 'created %s; master key stored in the keyring, shown in a GUI dialog\n' "$KPSEC_DB"
+}
+
+cmd_show_master() {
+    local master
+    master=$(cache_get) || master=$(keyring_get) ||
+        die "master password found neither in the cache nor in the keyring" 4
+    show_message "kpsec master password" "Database: $KPSEC_DB
+
+Master password:
+
+$master"
+    printf 'master key shown in a GUI dialog\n'
+}
+
+cmd_relocate() {
+    local new_db old_db master
+    new_db=${1:?usage: kpsec relocate <new-path>}
+    new_db=${new_db/#\~/$HOME}
+    [ -f "$new_db" ] || die "no database at $new_db" 3
+    [ "$new_db" != "$KPSEC_DB" ] || die "source and target paths are the same" 3
+    master=$(master_get) || die "no master password known for $KPSEC_DB" 4
+
+    old_db=$KPSEC_DB
+    KPSEC_DB=$new_db
+    keyring_put "$master"
+    cache_put "$master"
+    if ! kp_quiet db-info -q "$new_db" >/dev/null; then
+        keyring_del || true
+        cache_drop || true
+        KPSEC_DB=$old_db
+        die "$new_db does not open with that master password — nothing changed" 5
+    fi
+    KPSEC_DB=$old_db
+    keyring_del || true
+    cache_drop || true
+    printf 'relocated %s -> %s\n' "$old_db" "$new_db"
+    printf 'set KPSEC_DB or %s if the new path is not the default\n' "$KPSEC_CONFIG"
+}
+
+cmd_lock() {
+    if cache_drop; then printf 'cache dropped\n'; else printf 'cache was empty\n'; fi
+}
+
+usage() {
+    cat <<'EOF'
+kpsec — use secrets from a local KeePassXC database without printing them
+
+  kpsec status                        database, keyring backend, unlock check
+  kpsec ls [group]                    list entries (never values)
+  kpsec check <ref>...                verify refs resolve: length + sha256 prefix
+  kpsec run [--env-file F] [-e VAR=ref] -- cmd
+                                      run cmd with the secrets in its environment
+  kpsec add <group>/<entry> [-u user] [--url u] [-g] [-L n]
+                                      add/update an entry; value typed in a dialog
+  kpsec clip <ref> [seconds]          copy a value to the clipboard
+  kpsec init                          create the database and its master key
+  kpsec relocate <path>               re-point the master key after moving the .kdbx
+  kpsec lock                          drop the cached master password
+  kpsec show-master                   show the master password in a dialog (human only)
+
+References: kp://<group>/<entry>[#<Attribute>], default attribute Password.
+Environment: KPSEC_DB, KPSEC_TTL, KPSEC_CONFIG, KPSEC_KEYRING, KPSEC_KEEPASSXC_CLI,
+KPSEC_NO_GUI, KPSEC_PROMPT_TIMEOUT.
+EOF
+}
+
+# Sourced as a library (KPSEC_LIB=1 . kpsec) other tools get resolve(), kp(),
+# master_get() and the keyring helpers without a value ever hitting stdout.
+[ "${KPSEC_LIB:-}" = "1" ] && return 0
+
+case "${1:-}" in
+    status) shift; cmd_status "$@" ;;
+    ls) shift; cmd_ls "$@" ;;
+    check) shift; [ $# -gt 0 ] || die "usage: kpsec check <ref>..." 2; cmd_check "$@" ;;
+    run) shift; cmd_run "$@" ;;
+    add) shift; cmd_add "$@" ;;
+    clip) shift; [ $# -gt 0 ] || die "usage: kpsec clip <ref> [seconds]" 2; cmd_clip "$@" ;;
+    init) shift; cmd_init "$@" ;;
+    relocate) shift; cmd_relocate "$@" ;;
+    lock) shift; cmd_lock "$@" ;;
+    show-master) shift; cmd_show_master "$@" ;;
+    -h|--help|help|'') usage ;;
+    *) die "unknown command: $1 (try kpsec --help)" 2 ;;
+esac

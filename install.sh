@@ -56,18 +56,15 @@ EOF
 
 check_deps() {
     local missing=() cli_found=0
-    command -v python3 >/dev/null || missing+=("python3")
     for cli in keepassxc-cli \
                /Applications/KeePassXC.app/Contents/MacOS/keepassxc-cli \
                /opt/homebrew/bin/keepassxc-cli; do
         if command -v "$cli" >/dev/null || [[ -x "$cli" ]]; then cli_found=1; break; fi
     done
     ((cli_found)) || missing+=("keepassxc-cli")
-    # keyring backend: Keychain on macOS, Secret Service on Linux, python keyring anywhere
-    if [[ "$(uname -s)" != "Darwin" ]] &&
-       ! python3 -c "import secretstorage" 2>/dev/null &&
-       ! python3 -c "import keyring" 2>/dev/null; then
-        missing+=("python3-secretstorage (or pip install keyring)")
+    # keyring: Keychain ships with macOS, Linux needs secret-tool (libsecret)
+    if [[ "$(uname -s)" != "Darwin" ]] && ! command -v secret-tool >/dev/null; then
+        missing+=("secret-tool (libsecret-tools)")
     fi
     if ((${#missing[@]})); then
         printf 'missing dependencies: %s\n' "${missing[*]}" >&2

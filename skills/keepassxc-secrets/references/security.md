@@ -1,0 +1,80 @@
+# Threat model and design decisions
+
+## What this protects against
+
+**Secrets ending up in the model context.** Anything an agent's shell prints is
+read by the model and may be persisted in a transcript. Every path here keeps
+values out of stdout: they are resolved in-process and passed to the child via
+its environment, and the child's output is filtered.
+
+**Secrets ending up in process arguments.** `/proc/<pid>/cmdline` is world
+readable on a default Linux install. `argocd login --password X` exposes the
+password to every process on the machine for the duration of the call; that is
+why `argologin` calls `POST /api/v1/session` and puts the password in the request
+body instead.
+
+**Secrets ending up on disk.** The master password is never written to a file.
+The ArgoCD token is cached in the kernel keyring (memory only, with a TTL) and,
+in stateless mode, in a tmpfs file removed in a `finally` block.
+
+**Blast radius of the main database.** Agents get their own `agents.kdbx`. A
+mistake or a prompt injection can only reach the secrets deliberately copied
+there, not a lifetime of personal credentials.
+
+## What this does NOT protect against
+
+- **A malicious local process running as your user.** It can read the kernel
+  keyring and query the Secret Service just as these scripts do. On a desktop
+  where the keyring auto-unlocks at login, "unlocked" means unlocked for
+  everything running as you.
+- **An agent that runs an arbitrary command with a resolved secret.** If the
+  agent can call `kpsec run`, it can pass the secret to a program of its
+  choosing. Redaction hides the value from the transcript; it does not stop
+  exfiltration. Constrain that with permission rules, not with this skill.
+- **Secrets already leaked elsewhere** — CI variables, dotfiles, shell history
+  from before the migration.
+
+## Why not the Secret Service directly
+
+KeePassXC can register as the `org.freedesktop.secrets` provider, which would let
+`secret-tool` read entries from the already-unlocked GUI database. In practice
+that slot is often taken: on KDE Plasma `ksecretd` owns it, on GNOME
+`gnome-keyring-daemon` does, and KeePassXC then refuses to register
+("another secret service is running").
+
+So the design goes the other way round: the desktop keyring holds one secret —
+the master password of `agents.kdbx` — and `keepassxc-cli` does the rest. That
+works on any desktop, with any keyring, without reconfiguring the session.
+
+## Why the kernel keyring for caching
+
+`keyctl` keys live in kernel memory, are scoped to the user session, never touch
+disk, and expire on their own via `keyctl timeout`. Compared to a file in
+`/dev/shm` or an environment variable in a long-lived shell, that is both simpler
+and harder to leak by accident. If `keyctl` is missing, everything still works —
+the scripts fall back to the Secret Service on each call.
+
+## Recommended permission rules
+
+Add to `~/.claude/settings.json` so the agent uses the wrappers and cannot reach
+around them:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(~/.claude/skills/keepassxc-secrets/scripts/kpsec:*)",
+      "Bash(~/.claude/skills/keepassxc-secrets/scripts/argologin:*)"
+    ],
+    "deny": [
+      "Bash(keepassxc-cli:*)",
+      "Bash(keyctl:*)",
+      "Read(//home/*/Documents/.pass/**)"
+    ]
+  }
+}
+```
+
+`deny` on `keepassxc-cli` is the important one: it removes the obvious way to
+print a password directly. The wrappers call the binary through Python, so they
+keep working.

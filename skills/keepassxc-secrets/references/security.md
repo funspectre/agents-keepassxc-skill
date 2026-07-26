@@ -68,7 +68,7 @@ around them:
     "deny": [
       "Bash(keepassxc-cli:*)",
       "Bash(keyctl:*)",
-      "Read(//home/*/Documents/.pass/**)"
+      "Read(//home/*/.pass/**)"
     ]
   }
 }

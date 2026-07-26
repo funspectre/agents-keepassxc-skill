@@ -32,7 +32,7 @@ kpsec status               # should print "unlock: ok"
 your main password manager — it is your only way back into the database if the
 desktop keyring is lost. To see it again: `kpsec show-master`.
 
-To open the database by hand, point KeePassXC at `~/Documents/.pass/agents.kdbx`
+To open the database by hand, point KeePassXC at `~/.pass/agents.kdbx`
 and use that master password.
 
 ## Which keyring is actually used
@@ -62,6 +62,22 @@ Set `KPSEC_NO_GUI=1`. Without a keyring entry the scripts then exit with code 4
 rather than trying to open a dialog. Provide the master password through the
 Secret Service beforehand, or point `KPSEC_DB` at a database you unlock another
 way.
+
+## Moving the database
+
+Keyring entries are keyed by the database path, so a moved `.kdbx` leaves its
+master key pointing at a path that no longer exists. Re-point it after the move:
+
+```bash
+mv ~/.pass/agents.kdbx ~/vault/agents.kdbx
+KPSEC_DB=~/.pass/agents.kdbx kpsec relocate ~/vault/agents.kdbx
+```
+
+`relocate` copies the key to the new path, verifies the database actually opens
+with it, and only then removes the old entry — a wrong target leaves everything
+untouched. If the new location is not the default, record it in
+`~/.config/kpsec/config.json` (`{"db": "~/vault/agents.kdbx"}`) or export
+`KPSEC_DB`.
 
 ## Multiple databases
 

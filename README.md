@@ -41,7 +41,7 @@ child through its environment; output is filtered on the way back.
 git clone https://github.com/jidckii/claude-code-keepassxc-skill.git
 cd claude-code-keepassxc-skill
 ./install.sh          # symlinks skills/keepassxc-secrets into ~/.claude/skills/
-kpsec init            # creates ~/Documents/.pass/agents.kdbx, stores the master key
+kpsec init            # creates ~/.pass/agents.kdbx, stores the master key
 ```
 
 `install.sh --copy` copies instead of symlinking. See
@@ -85,6 +85,7 @@ kpsec run --env-file=.env.tpl -- docker compose up
 | `kpsec add <path> [-u user] [--url u] [-g]` | add or update an entry; the value is typed into a GUI dialog |
 | `kpsec clip <ref>` | copy a value to the clipboard for 15 seconds |
 | `kpsec lock` | drop the cached master password |
+| `kpsec relocate <path>` | re-point the stored master key after moving the `.kdbx` file |
 | `kpsec show-master` | show the master password in a GUI dialog (human-only) |
 
 ## Building your own tools on it

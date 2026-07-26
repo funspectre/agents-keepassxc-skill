@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-DEFAULT_DB = Path.home() / "Documents" / ".pass" / "agents.kdbx"
+DEFAULT_DB = Path.home() / ".pass" / "agents.kdbx"
 DEFAULT_TTL = 900
 CONFIG_PATH = Path(os.environ.get("KPSEC_CONFIG", Path.home() / ".config" / "kpsec" / "config.json"))
 REF_RE = re.compile(r"^kp://(?P<path>[^#\s]+)(?:#(?P<attr>[A-Za-z0-9_. -]+))?$")
@@ -113,6 +113,22 @@ def secretservice_put(db, secret):
         col.unlock()
     col.create_item(f"kpsec master key ({Path(db).name})", keyring_attrs(db),
                     secret.encode(), replace=True)
+
+
+def secretservice_delete(db):
+    try:
+        import secretstorage
+    except ImportError:
+        return False
+    bus = secretstorage.dbus_init()
+    col = secretstorage.get_default_collection(bus)
+    if col.is_locked():
+        col.unlock()
+    deleted = False
+    for item in col.search_items(keyring_attrs(db)):
+        item.delete()
+        deleted = True
+    return deleted
 
 
 def gui_prompt(title, text):
@@ -321,6 +337,30 @@ def cmd_init(cfg, _args):
     return 0
 
 
+def cmd_relocate(cfg, args):
+    """Keyring entries are keyed by database path, so a moved file loses its key."""
+    new_db = str(Path(args.new_path).expanduser())
+    if not Path(new_db).exists():
+        die(f"no database at {new_db}", 3)
+    if new_db == cfg["db"]:
+        die("source and target paths are the same", 3)
+    master = get_master(cfg, allow_prompt=True)
+    if not master:
+        die(f"no master password known for {cfg['db']}", 4)
+    new_cfg = {**cfg, "db": new_db}
+    secretservice_put(new_db, master)
+    keyctl_put(new_db, master, cfg["ttl"])
+    if kp_run(new_cfg, ["db-info", "-q", new_db], check=False).returncode != 0:
+        secretservice_delete(new_db)
+        keyctl_drop(new_db)
+        die(f"{new_db} does not open with that master password — nothing changed", 5)
+    secretservice_delete(cfg["db"])
+    keyctl_drop(cfg["db"])
+    print(f"relocated {cfg['db']} -> {new_db}")
+    print("set KPSEC_DB or ~/.config/kpsec/config.json if the new path is not the default")
+    return 0
+
+
 def cmd_show_master(cfg, _args):
     master = get_master(cfg, allow_prompt=False)
     if not master:
@@ -384,6 +424,10 @@ def main():
 
     sp = sub.add_parser("init", help="create the database and its master key")
     sp.set_defaults(func=cmd_init)
+
+    sp = sub.add_parser("relocate", help="re-point the stored master key at a moved database file")
+    sp.add_argument("new_path")
+    sp.set_defaults(func=cmd_relocate)
 
     sp = sub.add_parser("show-master", help="show the master password in a GUI dialog, never on stdout")
     sp.set_defaults(func=cmd_show_master)

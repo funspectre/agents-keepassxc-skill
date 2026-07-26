@@ -8,7 +8,7 @@ requires:
 # keepassxc-secrets — secrets from KeePassXC without leaking them
 
 Agent-facing secrets live in a **separate database**, by default
-`~/Documents/.pass/agents.kdbx`. Its master password is stored in the desktop
+`~/.pass/agents.kdbx`. Its master password is stored in the desktop
 Secret Service keyring (unlocked at login) and cached in the kernel keyring, so
 the scripts run without prompting. The user's main database stays out of reach —
 that is what bounds the blast radius.

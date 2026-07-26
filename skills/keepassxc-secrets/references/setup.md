@@ -24,9 +24,15 @@ sudo dnf install keepassxc python3-secretstorage keyutils
 ## First run
 
 ```bash
+./install.sh --bin         # install for detected harnesses and put kpsec on PATH
 kpsec init                 # creates the database, generates and stores the master key
 kpsec status               # should print "unlock: ok"
 ```
+
+Without `--bin` the commands live at `<skill>/scripts/kpsec`, where `<skill>` is
+the install path for your harness (`~/.claude/skills/keepassxc-secrets`,
+`~/.codex/skills/keepassxc-secrets`, `<project>/.cursor/skills/keepassxc-secrets`,
+…). `./install.sh --list` prints them.
 
 `init` shows the generated master password once, in a GUI dialog. Copy it into
 your main password manager — it is your only way back into the database if the

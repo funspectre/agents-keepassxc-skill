@@ -56,8 +56,12 @@ the scripts fall back to the Secret Service on each call.
 
 ## Recommended permission rules
 
-Add to `~/.claude/settings.json` so the agent uses the wrappers and cannot reach
-around them:
+Whatever the harness, the shape is the same: allow `kpsec`, deny everything that
+reads the database or the keyring directly. Denying `keepassxc-cli` is the
+important half — it removes the obvious way to print a password. The wrappers
+invoke that binary from inside Python, so they keep working.
+
+**Claude Code** — `~/.claude/settings.json`:
 
 ```json
 {
@@ -74,6 +78,14 @@ around them:
 }
 ```
 
-`deny` on `keepassxc-cli` is the important one: it removes the obvious way to
-print a password directly. The wrappers call the binary through Python, so they
-keep working.
+**Codex CLI** — approval and sandbox policy live in `~/.codex/config.toml`; there
+is no per-command allowlist, so the equivalent is to run with approvals on for
+commands outside the sandbox and rely on the instruction in `SKILL.md`.
+
+**Cursor, Copilot, Windsurf and other IDE agents** — command allowlists/denylists
+sit in the tool's own settings UI. Add `keepassxc-cli` to the denylist and
+`kpsec` to the allowlist.
+
+**Any harness** — a filesystem-level backstop that does not depend on the agent
+honouring anything: keep the database outside the workspace (`~/.pass`, not the
+repo) so a project-scoped agent cannot read the `.kdbx` at all.

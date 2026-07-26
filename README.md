@@ -1,8 +1,13 @@
-# claude-code-keepassxc-skill
+# agents-keepassxc-skill
 
-A [Claude Code](https://claude.com/claude-code) skill for using secrets from a
-local **KeePassXC** database — without the values ever reaching the model's
-context, your shell history, or `ps` output.
+An [Agent Skill](https://agents.md) for using secrets from a local **KeePassXC**
+database — without the values ever reaching the model's context, your shell
+history, or `ps` output.
+
+Written in the portable `SKILL.md` format, so the same directory works in Claude
+Code, Codex CLI, Cursor, Gemini CLI and any other harness that reads skills;
+harnesses that only read `AGENTS.md` are covered by a pointer block the installer
+writes. See [Install](#install).
 
 It is the KeePassXC counterpart to the 1Password skills that already exist: same
 idea of `op://`-style secret references and `op run`-style injection, but backed
@@ -38,14 +43,34 @@ child through its environment; output is filtered on the way back.
 ## Install
 
 ```bash
-git clone https://github.com/jidckii/claude-code-keepassxc-skill.git
-cd claude-code-keepassxc-skill
-./install.sh          # symlinks skills/keepassxc-secrets into ~/.claude/skills/
+git clone https://github.com/jidckii/agents-keepassxc-skill.git
+cd agents-keepassxc-skill
+./install.sh --bin    # every detected harness, plus kpsec on PATH
 kpsec init            # creates ~/.pass/agents.kdbx, stores the master key
 ```
 
-`install.sh --copy` copies instead of symlinking. See
-[`references/setup.md`](skills/keepassxc-secrets/references/setup.md) for
+`install.sh` symlinks the skill directory, so `git pull` updates every harness at
+once (`--copy` if you would rather have independent copies). It is idempotent —
+re-run it after adding a new harness.
+
+| Where | Harnesses | How |
+|---|---|---|
+| `~/.claude/skills/` | Claude Code | `./install.sh` (auto-detected) |
+| `~/.codex/skills/` | Codex CLI | `./install.sh` (auto-detected) |
+| `~/.gemini/skills/` | Gemini CLI, Antigravity | `./install.sh` (auto-detected) |
+| `<project>/.cursor/skills/` | Cursor — it has no personal skills directory | `./install.sh --project` |
+| `<project>/.agents/skills/` | Cline, Amp, opencode, Antigravity | `./install.sh --project` |
+| `<project>/AGENTS.md` | Copilot, Windsurf, Aider, Zed, Devin, Jules, … | `./install.sh --project` |
+| anywhere else | any harness with a skills directory | `./install.sh --skills-dir PATH` |
+
+`./install.sh --list` prints the paths and what was detected. `--all-user`
+installs for every known harness even if it is not installed yet.
+
+For AGENTS.md-only harnesses the installer appends a short pointer block between
+`<!-- keepassxc-secrets:begin -->` markers — re-running replaces that block and
+leaves the rest of the file alone.
+
+See [`references/setup.md`](skills/keepassxc-secrets/references/setup.md) for
 distribution packages and keyring specifics.
 
 ## Secret references
@@ -95,7 +120,7 @@ that way the value never passes through an intermediate stdout:
 
 ```python
 import os, subprocess, sys
-sys.path.insert(0, os.path.expanduser("~/.claude/skills/keepassxc-secrets/scripts"))
+sys.path.insert(0, os.path.expanduser("~/.claude/skills/keepassxc-secrets/scripts"))  # or wherever it is installed
 import kpsec_core as kpsec
 
 cfg = kpsec.load_config()
@@ -124,13 +149,22 @@ The short version:
   a TTL.
 - Redaction keeps values out of transcripts. It does not stop an agent that is
   allowed to run arbitrary commands from exfiltrating a secret — restrict that
-  with Claude Code permission rules, listed in the same document.
+  with your harness's permission rules; ready-made ones are in the same document.
 
 ## Requirements
 
 `keepassxc-cli` ≥ 2.7 and `python3` with `secretstorage`; optionally `keyutils`
 for caching and `kdialog`/`zenity` for prompts. Linux with a Secret Service
 provider (KDE, GNOME, or any libsecret keyring).
+
+## Acknowledgements
+
+The reference-and-inject approach comes from the 1Password side of this problem,
+in particular [kcmadden/claude-code-1password-skill](https://github.com/kcmadden/claude-code-1password-skill)
+— `op://` references, `op run` for injection, and the rule of committing
+templates rather than values. This project keeps those ideas and swaps the cloud
+vault for a local `.kdbx` plus the desktop keyring, which is what makes the
+unlock problem (and most of the design here) different.
 
 ## License
 

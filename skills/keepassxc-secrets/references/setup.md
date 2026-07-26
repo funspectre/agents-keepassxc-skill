@@ -6,9 +6,10 @@
 |---|---|---|
 | `keepassxc-cli` ≥ 2.7 | reads the database | yes |
 | `python3` | the scripts | yes |
-| `python3-secretstorage` | stores the master password in the desktop keyring | yes |
-| `keyctl` (keyutils) | in-memory cache with a TTL | optional |
-| `kdialog` or `zenity` | prompts and one-off displays | optional |
+| `python3-secretstorage` | master password in the desktop keyring (Linux) | Linux |
+| `keyring` (pip) | same, on Windows; fallback elsewhere | Windows |
+| `keyctl` (keyutils) | in-memory cache with a TTL (Linux only) | optional |
+| `kdialog`, `zenity` or `pinentry` | prompts and one-off displays | optional |
 
 ```bash
 # Debian/Ubuntu
@@ -19,7 +20,16 @@ sudo zypper install keepassxc python3-SecretStorage keyutils
 
 # Fedora
 sudo dnf install keepassxc python3-secretstorage keyutils
+
+# macOS
+brew install keepassxc
+
+# Windows
+winget install KeePassXCTeam.KeePassXC; pip install keyring
 ```
+
+macOS uses the login Keychain and Windows the Credential Manager — see
+[`platforms.md`](platforms.md), which also covers tiling WMs without a keyring.
 
 ## First run
 

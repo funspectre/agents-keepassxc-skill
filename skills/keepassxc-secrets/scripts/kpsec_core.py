@@ -17,6 +17,29 @@ DEFAULT_TTL = 900
 CONFIG_PATH = Path(os.environ.get("KPSEC_CONFIG", Path.home() / ".config" / "kpsec" / "config.json"))
 REF_RE = re.compile(r"^kp://(?P<path>[^#\s]+)(?:#(?P<attr>[A-Za-z0-9_. -]+))?$")
 PUBLIC_ATTRS = {"username", "title", "url", "notes"}
+MACOS = sys.platform == "darwin"
+WINDOWS = os.name == "nt"
+KEYCHAIN_SERVICE = "kpsec master key"
+CLI_FALLBACKS = [
+    "/Applications/KeePassXC.app/Contents/MacOS/keepassxc-cli",
+    "/opt/homebrew/bin/keepassxc-cli",
+    r"C:\Program Files\KeePassXC\keepassxc-cli.exe",
+    r"C:\Program Files (x86)\KeePassXC\keepassxc-cli.exe",
+]
+
+
+def keepassxc_bin():
+    """KeePassXC ships the CLI inside the app bundle on macOS and off PATH on Windows."""
+    explicit = os.environ.get("KPSEC_KEEPASSXC_CLI")
+    if explicit:
+        return explicit
+    found = shutil.which("keepassxc-cli")
+    if found:
+        return found
+    for candidate in CLI_FALLBACKS:
+        if Path(candidate).exists():
+            return candidate
+    return "keepassxc-cli"
 
 
 def die(msg, code=1) -> NoReturn:
@@ -88,69 +111,260 @@ def keyring_attrs(db):
     return {"application": "kpsec", "db": db}
 
 
-def secretservice_get(db):
-    try:
-        import secretstorage
-    except ImportError:
-        return None
-    try:
-        bus = secretstorage.dbus_init()
-        col = secretstorage.get_default_collection(bus)
-        if col.is_locked():
-            col.unlock()
-        for item in col.search_items(keyring_attrs(db)):
-            return item.get_secret().decode()
-    except Exception:
-        return None
-    return None
-
-
-def secretservice_put(db, secret):
+def _secretservice_collection():
     import secretstorage
     bus = secretstorage.dbus_init()
     col = secretstorage.get_default_collection(bus)
     if col.is_locked():
         col.unlock()
-    col.create_item(f"kpsec master key ({Path(db).name})", keyring_attrs(db),
-                    secret.encode(), replace=True)
+    return col
 
 
-def secretservice_delete(db):
-    try:
-        import secretstorage
-    except ImportError:
-        return False
-    bus = secretstorage.dbus_init()
-    col = secretstorage.get_default_collection(bus)
-    if col.is_locked():
-        col.unlock()
+def _secretservice_get(db):
+    for item in _secretservice_collection().search_items(keyring_attrs(db)):
+        return item.get_secret().decode()
+    return None
+
+
+def _secretservice_put(db, secret):
+    _secretservice_collection().create_item(
+        f"{KEYCHAIN_SERVICE} ({Path(db).name})", keyring_attrs(db), secret.encode(), replace=True)
+
+
+def _secretservice_delete(db):
     deleted = False
-    for item in col.search_items(keyring_attrs(db)):
+    for item in _secretservice_collection().search_items(keyring_attrs(db)):
         item.delete()
         deleted = True
     return deleted
 
 
+def _keychain_get(db):
+    r = subprocess.run(["security", "find-generic-password", "-w",
+                        "-s", KEYCHAIN_SERVICE, "-a", db],
+                       capture_output=True, text=True)
+    return r.stdout.rstrip("\n") if r.returncode == 0 else None
+
+
+def _keychain_put(db, secret):
+    # -U updates in place; -T grants `security` itself password-less read access
+    subprocess.run(["security", "add-generic-password", "-U",
+                    "-s", KEYCHAIN_SERVICE, "-a", db, "-w", secret,
+                    "-T", "/usr/bin/security"],
+                   input=secret.encode(), capture_output=True, check=True)
+
+
+def _keychain_delete(db):
+    r = subprocess.run(["security", "delete-generic-password",
+                        "-s", KEYCHAIN_SERVICE, "-a", db], capture_output=True)
+    return r.returncode == 0
+
+
+def _pykeyring_get(db):
+    import keyring
+    return keyring.get_password(KEYCHAIN_SERVICE, db)
+
+
+def _pykeyring_put(db, secret):
+    import keyring
+    keyring.set_password(KEYCHAIN_SERVICE, db, secret)
+
+
+def _pykeyring_delete(db):
+    import keyring
+    try:
+        keyring.delete_password(KEYCHAIN_SERVICE, db)
+        return True
+    except Exception:
+        return False
+
+
+BACKENDS = {
+    "secretservice": (_secretservice_get, _secretservice_put, _secretservice_delete),
+    "keychain": (_keychain_get, _keychain_put, _keychain_delete),
+    "keyring": (_pykeyring_get, _pykeyring_put, _pykeyring_delete),
+}
+
+
+def backend_available(name):
+    if name == "secretservice":
+        try:
+            import secretstorage  # noqa: F401
+        except ImportError:
+            return False
+        return not (MACOS or WINDOWS)
+    if name == "keychain":
+        return MACOS and bool(shutil.which("security"))
+    if name == "keyring":
+        try:
+            import keyring  # noqa: F401
+        except ImportError:
+            return False
+        return True
+    return False
+
+
+def backend_order():
+    """First working backend wins; KPSEC_KEYRING pins one explicitly."""
+    pinned = os.environ.get("KPSEC_KEYRING", "auto")
+    if pinned == "none":
+        return []
+    if pinned != "auto":
+        if pinned not in BACKENDS:
+            die(f"unknown KPSEC_KEYRING={pinned} (expected: {', '.join(BACKENDS)}, none, auto)", 2)
+        if not backend_available(pinned):
+            die(f"KPSEC_KEYRING={pinned} is not usable here "
+                f"(available: {', '.join(n for n in BACKENDS if backend_available(n)) or 'none'})", 4)
+        return [pinned]
+    if MACOS:
+        preferred = ["keychain", "keyring"]
+    elif WINDOWS:
+        preferred = ["keyring"]
+    else:
+        preferred = ["secretservice", "keyring"]
+    return [name for name in preferred if backend_available(name)]
+
+
+def keyring_backend():
+    order = backend_order()
+    return order[0] if order else None
+
+
+def secretservice_get(db):
+    for name in backend_order():
+        try:
+            secret = BACKENDS[name][0](db)
+        except Exception:
+            continue
+        if secret:
+            return secret
+    return None
+
+
+def secretservice_put(db, secret):
+    name = keyring_backend()
+    if not name:
+        die("no keyring backend available; install python3-secretstorage (Linux), "
+            "use macOS Keychain, or `pip install keyring`", 4)
+    BACKENDS[name][1](db, secret)
+
+
+def secretservice_delete(db):
+    deleted = False
+    for name in backend_order():
+        try:
+            deleted = BACKENDS[name][2](db) or deleted
+        except Exception:
+            continue
+    return deleted
+
+
+def prompt_timeout():
+    return int(os.environ.get("KPSEC_PROMPT_TIMEOUT", 120))
+
+
+def run_prompt(cmd, stdin=None):
+    """A prompt that never hangs the caller: an unanswered dialog times out."""
+    try:
+        return subprocess.run(cmd, input=stdin, capture_output=True, text=True,
+                              timeout=prompt_timeout())
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _assuan_unescape(text):
+    return re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), text)
+
+
+def graphical_session():
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _pinentry_prompt(title, text):
+    """Fallback where kdialog/zenity are absent: tiling WMs, plain X11, a bare TTY."""
+    if not graphical_session() and not sys.stdin.isatty():
+        # pinentry would fall back to curses and block forever on a non-tty
+        return None
+    for exe in ("pinentry", "pinentry-qt", "pinentry-gnome3", "pinentry-gtk-2",
+                "pinentry-curses"):
+        path = shutil.which(exe)
+        if not path:
+            continue
+        script = f"SETTITLE {title}\nSETDESC {text}\nSETPROMPT Password:\nGETPIN\nBYE\n"
+        r = run_prompt([path], stdin=script)
+        if r is None:
+            return None
+        for line in r.stdout.splitlines():
+            if line.startswith("D "):
+                return _assuan_unescape(line[2:].strip())
+        return None
+    return None
+
+
+def _osascript_prompt(title, text):
+    script = (f'display dialog {json.dumps(text)} with title {json.dumps(title)} '
+              'default answer "" with hidden answer')
+    r = run_prompt(["osascript", "-e", script])
+    if r is None or r.returncode != 0:
+        return None
+    marker = "text returned:"
+    idx = r.stdout.find(marker)
+    return r.stdout[idx + len(marker):].strip() if idx >= 0 else None
+
+
+def _powershell_prompt(title, text):
+    for exe in ("pwsh", "powershell"):
+        path = shutil.which(exe)
+        if not path:
+            continue
+        script = (f"$c = Get-Credential -UserName kpsec -Message '{title}: {text}'; "
+                  "if ($c) { $c.GetNetworkCredential().Password }")
+        r = run_prompt([path, "-NoProfile", "-Command", script])
+        if r is not None and r.returncode == 0 and r.stdout.strip():
+            return r.stdout.rstrip("\r\n")
+        return None
+    return None
+
+
 def gui_prompt(title, text):
     if os.environ.get("KPSEC_NO_GUI"):
         return None
+    if MACOS:
+        return _osascript_prompt(title, text)
+    if WINDOWS:
+        return _powershell_prompt(title, text)
     for cmd in (["kdialog", "--title", title, "--password", text],
                 ["zenity", "--password", "--title", title]):
-        if shutil.which(cmd[0]):
-            r = subprocess.run(cmd, capture_output=True, text=True)
-            if r.returncode == 0 and r.stdout.strip():
+        if shutil.which(cmd[0]) and graphical_session():
+            r = run_prompt(cmd)
+            if r is not None and r.returncode == 0 and r.stdout.strip():
                 return r.stdout.rstrip("\n")
             return None
-    return None
+    return _pinentry_prompt(title, text)
 
 
 def gui_message(title, text):
     if os.environ.get("KPSEC_NO_GUI"):
         return
+    if MACOS:
+        script = (f'display dialog {json.dumps(text)} with title {json.dumps(title)} '
+                  'buttons {"OK"} default button "OK"')
+        run_prompt(["osascript", "-e", script])
+        return
+    if WINDOWS:
+        for exe in ("pwsh", "powershell"):
+            if shutil.which(exe):
+                script = ("Add-Type -AssemblyName System.Windows.Forms; "
+                          f"[System.Windows.Forms.MessageBox]::Show('{text}', '{title}')")
+                run_prompt([exe, "-NoProfile", "-Command", script])
+                return
+        return
+    if not graphical_session():
+        return
     for cmd in (["kdialog", "--title", title, "--msgbox", text],
                 ["zenity", "--info", "--title", title, "--text", text]):
         if shutil.which(cmd[0]):
-            subprocess.run(cmd, capture_output=True)
+            run_prompt(cmd)
             return
 
 
@@ -175,7 +389,7 @@ def kp_run(cfg, args, extra_stdin="", check=True):
     if master is None:
         die("cannot obtain the database master password", 4)
     payload = master + "\n" + extra_stdin
-    r = subprocess.run(["keepassxc-cli"] + args, input=payload.encode(),
+    r = subprocess.run([keepassxc_bin()] + args, input=payload.encode(),
                        capture_output=True)
     if check and r.returncode != 0:
         err = r.stderr.decode().strip().splitlines()
@@ -320,10 +534,10 @@ def cmd_init(cfg, _args):
     if db.exists():
         die(f"database already exists: {db}", 3)
     db.parent.mkdir(parents=True, exist_ok=True)
-    gen = subprocess.run(["keepassxc-cli", "generate", "-L", "40", "-l", "-U", "-n"],
+    gen = subprocess.run([keepassxc_bin(), "generate", "-L", "40", "-l", "-U", "-n"],
                          capture_output=True, text=True, check=True)
     master = gen.stdout.strip()
-    r = subprocess.run(["keepassxc-cli", "db-create", "-q", "-p", str(db)],
+    r = subprocess.run([keepassxc_bin(), "db-create", "-q", "-p", str(db)],
                        input=f"{master}\n{master}\n".encode(), capture_output=True)
     if r.returncode != 0:
         die("db-create: " + r.stderr.decode().strip(), 5)
@@ -373,9 +587,12 @@ def cmd_show_master(cfg, _args):
 def cmd_status(cfg, _args):
     db = Path(cfg["db"])
     print(f"db:             {db} ({'present' if db.exists() else 'MISSING'})")
-    print(f"cache ttl:      {cfg['ttl']}s")
-    print(f"keyctl cache:   {'warm' if keyctl_get(str(db)) else 'empty'}")
-    print(f"secret service: {'key present' if secretservice_get(str(db)) else 'no key'}")
+    print(f"keepassxc-cli:  {keepassxc_bin()}")
+    print(f"keyring:        {keyring_backend() or 'NONE'} "
+          f"({'key present' if secretservice_get(str(db)) else 'no key'})")
+    cache = "unsupported on this platform" if not shutil.which("keyctl") else \
+        ("warm" if keyctl_get(str(db)) else "empty")
+    print(f"cache:          {cache}, ttl {cfg['ttl']}s")
     if db.exists():
         ok = kp_run(cfg, ["db-info", "-q", str(db)], check=False).returncode == 0
         print(f"unlock:         {'ok' if ok else 'FAILED'}")

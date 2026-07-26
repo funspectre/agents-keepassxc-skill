@@ -49,6 +49,9 @@ cd agents-keepassxc-skill
 kpsec init            # creates ~/.pass/agents.kdbx, stores the master key
 ```
 
+On Windows use `.\install.ps1` (same flags in PowerShell style: `-Project`,
+`-AllUser`, `-Copy`, `-List`).
+
 `install.sh` symlinks the skill directory, so `git pull` updates every harness at
 once (`--copy` if you would rather have independent copies). It is idempotent —
 re-run it after adding a new harness.
@@ -151,11 +154,23 @@ The short version:
   allowed to run arbitrary commands from exfiltrating a secret — restrict that
   with your harness's permission rules; ready-made ones are in the same document.
 
-## Requirements
+## Platforms
 
-`keepassxc-cli` ≥ 2.7 and `python3` with `secretstorage`; optionally `keyutils`
-for caching and `kdialog`/`zenity` for prompts. Linux with a Secret Service
-provider (KDE, GNOME, or any libsecret keyring).
+`keepassxc-cli` ≥ 2.7 and `python3` everywhere. What differs is where the master
+key lives and how you get asked for it:
+
+| | Master key store | Prompt | Extra |
+|---|---|---|---|
+| Linux, KDE/GNOME | Secret Service, unlocked at login via PAM | kdialog / zenity | `keyutils` for the TTL cache |
+| Linux, Hyprland/Sway/i3 | KeePassXC's own Secret Service, or standalone gnome-keyring | pinentry (Qt/GTK/curses) | see [`platforms.md`](skills/keepassxc-secrets/references/platforms.md) |
+| macOS | login Keychain via `security` | osascript dialog | CLI lives inside the app bundle |
+| Windows | Credential Manager via `keyring` | `Get-Credential` dialog | install with `install.ps1` |
+
+`kpsec status` prints which backend is actually in use; `KPSEC_KEYRING` pins one.
+On a minimal Linux session the `org.freedesktop.secrets` slot is usually free,
+which is the one case where KeePassXC's own Secret Service integration is the
+simplest answer — details and PAM snippets in
+[`references/platforms.md`](skills/keepassxc-secrets/references/platforms.md).
 
 ## Acknowledgements
 

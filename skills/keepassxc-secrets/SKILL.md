@@ -98,11 +98,15 @@ kpsec.stream_redacted(proc, [token])            # filter the child's output
 
 ## Troubleshooting
 
-- `kpsec status` shows where the master password comes from and whether the
-  database opens.
-- `unlock: FAILED` — the key in Secret Service does not match the database.
-- `kdialog`/`zenity` need a graphical session. For headless runs set
-  `KPSEC_NO_GUI=1`; the scripts then fail with exit code 4 instead of hanging.
-- Environment: `KPSEC_DB`, `KPSEC_TTL`, `KPSEC_CONFIG`.
-- See `references/security.md` for the threat model and `references/setup.md`
-  for keyring specifics on KDE/GNOME.
+- `kpsec status` shows the keyring backend in use, the resolved `keepassxc-cli`
+  and whether the database opens.
+- `unlock: FAILED` — the stored key does not match the database. After moving the
+  `.kdbx`, re-point the key with `kpsec relocate <new-path>`.
+- Prompts need a graphical session; without one they are skipped rather than
+  blocking. For headless runs set `KPSEC_NO_GUI=1` — the scripts then fail with
+  exit code 4.
+- Environment: `KPSEC_DB`, `KPSEC_TTL`, `KPSEC_CONFIG`, `KPSEC_KEYRING`
+  (`secretservice` / `keychain` / `keyring` / `none`), `KPSEC_KEEPASSXC_CLI`,
+  `KPSEC_PROMPT_TIMEOUT`.
+- See `references/security.md` for the threat model, `references/setup.md` for
+  installation and `references/platforms.md` for Linux/macOS/Windows specifics.

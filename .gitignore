@@ -2,6 +2,5 @@
 *.kdbx.lock
 .env
 .env.local
-skills/keepassxc-secrets/targets/argocd.tsv
 __pycache__/
 *.pyc

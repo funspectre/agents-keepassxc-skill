@@ -1,6 +1,6 @@
 ---
 name: keepassxc-secrets
-description: Use when a command needs a password, token or API key that lives in a local KeePassXC database — inject it into a CLI without ever printing the value, or log in to ArgoCD with the admin password from KeePassXC. Covers kp:// secret references, kpsec run/check/add and argologin.
+description: Use when a command needs a password, token or API key that lives in a local KeePassXC database — resolve it into the command's environment without ever printing the value. Covers kp:// secret references and kpsec run/check/ls/add.
 requires:
   bins: ["keepassxc-cli", "python3"]
 ---
@@ -22,7 +22,7 @@ Never:
 
 ```bash
 keepassxc-cli show ... -a Password         # the value lands in the model context
-argocd login ... --password "$(...)"       # the password is visible in /proc/*/cmdline
+some-cli --password "$(...)"               # the password is visible in /proc/*/cmdline
 export TOKEN=$(...)                        # the value sticks in history and logs
 ```
 
@@ -31,7 +31,6 @@ Instead:
 ```bash
 kpsec run -e TOKEN=kp://gitlab/api -- some-cli   # secret only in the child's env
 kpsec check kp://gitlab/api                      # verify without revealing
-argologin production                             # login with no password in argv
 ```
 
 ## Reference format
@@ -43,17 +42,17 @@ kp://<group>/<entry>[#<Attribute>]
 The default attribute is `Password`. Public attributes (`UserName`, `Title`,
 `URL`, `Notes`) are not redacted in output; everything else is.
 
-## kpsec
+## Commands
 
 ```bash
 kpsec status                              # database, cache, unlock check
 kpsec ls                                  # entries, without values
-kpsec check kp://argocd/production        # OK + length and sha256 prefix
+kpsec check kp://gitlab/api               # OK + length and sha256 prefix
 kpsec run -e TOKEN=kp://gitlab/api -- glab api /user
 kpsec run --env-file=.env.tpl -- docker compose up
 kpsec add gitlab/api -u alice             # value typed by a human in a GUI dialog
 kpsec add gitlab/api -g -L 32             # generate a random value
-kpsec clip kp://argocd/production         # clipboard for 15 seconds
+kpsec clip kp://gitlab/api                # clipboard for 15 seconds
 kpsec lock                                # drop the cached master password
 ```
 
@@ -61,7 +60,6 @@ kpsec lock                                # drop the cached master password
 references. It is safe to commit — it holds no values:
 
 ```
-ARGOCD_AUTH_TOKEN=kp://argocd/production
 REGISTRY_USER=deployer
 REGISTRY_PASSWORD=kp://registry/deployer
 ```
@@ -69,53 +67,34 @@ REGISTRY_PASSWORD=kp://registry/deployer
 Commands an agent must **not** run: `kpsec add --stdin` (the value would land in
 argv) and `kpsec show-master`. Those are for the human at the keyboard.
 
-## argologin — ArgoCD login
+## Adding a secret
 
 ```bash
-argologin list                          # aliases and the references behind them
-argologin production                    # writes the token into ~/.config/argocd/config
-argologin production --no-switch        # do not make it the current context
-argologin production --refresh          # ignore the cached token
-argologin production --logout           # drop the cached token
+kpsec add <group>/<entry> -u <username> --url <url>
 ```
 
-Afterwards the plain CLI works as usual:
+The value is typed into a GUI dialog, so it never passes through the agent's
+command line. Verify with `kpsec check kp://<group>/<entry>`.
 
-```bash
-argocd app list --argocd-context production
+`keepassxc-cli` cannot set or filter by tags, so entries are organised by group
+(`argocd/…`, `gitlab/…`, `registry/…`) and the reference mirrors that path.
+
+## Building tools on top
+
+Wrappers that need a secret should import the core rather than shell out to
+`kpsec` — that keeps values out of any intermediate stdout:
+
+```python
+import sys
+sys.path.insert(0, "/path/to/keepassxc-secrets/scripts")
+import kpsec_core as kpsec
+
+cfg = kpsec.load_config()
+token = kpsec.resolve(cfg, "kp://gitlab/api")   # stays in memory
+proc = subprocess.Popen(cmd, env={**os.environ, "TOKEN": token},
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+kpsec.stream_redacted(proc, [token])            # filter the child's output
 ```
-
-Stateless mode — nothing is written to the persistent config; the token lives in
-a tmpfs file that is deleted when the command exits:
-
-```bash
-argologin production -- argocd app list
-```
-
-The token comes from `POST /api/v1/session` (password in the body, never in argv)
-and is cached in the kernel keyring for 8 hours.
-
-### Protected instances
-
-For aliases marked `protected`, mutating verbs (`sync`, `delete`, `rollback`,
-`patch`, `set`, `create`, …) are refused in stateless mode with exit code 3.
-A change the user has already approved:
-
-```bash
-ARGO_ALLOW_WRITE=1 argologin production -- argocd app sync my-app
-```
-
-Going through `argocd` directly after `argologin` bypasses this guard — there the
-usual rule applies: no production changes without user confirmation.
-
-## Adding a new target
-
-1. Store the secret: `kpsec add argocd/<alias> -u admin --url https://<host>`
-   (the human types the value into the GUI dialog).
-2. Add a tab-separated row to `~/.config/kpsec/argocd.tsv`:
-   `alias<TAB>server<TAB>grpc_web<TAB>insecure<TAB>protected<TAB>kp://argocd/alias`.
-   Behind an nginx ingress `grpc_web` is almost always `true`.
-3. Verify: `kpsec check kp://argocd/<alias>` and `argologin <alias>`.
 
 ## Troubleshooting
 
@@ -124,6 +103,6 @@ usual rule applies: no production changes without user confirmation.
 - `unlock: FAILED` — the key in Secret Service does not match the database.
 - `kdialog`/`zenity` need a graphical session. For headless runs set
   `KPSEC_NO_GUI=1`; the scripts then fail with exit code 4 instead of hanging.
-- Environment: `KPSEC_DB`, `KPSEC_TTL`, `KPSEC_TARGETS`, `ARGOCD_TOKEN_TTL`.
+- Environment: `KPSEC_DB`, `KPSEC_TTL`, `KPSEC_CONFIG`.
 - See `references/security.md` for the threat model and `references/setup.md`
   for keyring specifics on KDE/GNOME.

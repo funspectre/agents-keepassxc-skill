@@ -8,14 +8,14 @@ values out of stdout: they are resolved in-process and passed to the child via
 its environment, and the child's output is filtered.
 
 **Secrets ending up in process arguments.** `/proc/<pid>/cmdline` is world
-readable on a default Linux install. `argocd login --password X` exposes the
-password to every process on the machine for the duration of the call; that is
-why `argologin` calls `POST /api/v1/session` and puts the password in the request
-body instead.
+readable on a default Linux install. Any `tool --password X` exposes the password
+to every process on the machine for the duration of the call. Nothing here passes
+a secret as an argument — values go through the environment of the child process,
+and wrappers built on `kpsec_core` should prefer an API call with the credential
+in the request body over a CLI flag.
 
-**Secrets ending up on disk.** The master password is never written to a file.
-The ArgoCD token is cached in the kernel keyring (memory only, with a TTL) and,
-in stateless mode, in a tmpfs file removed in a `finally` block.
+**Secrets ending up on disk.** The master password is never written to a file,
+and the cache lives in kernel memory with a TTL.
 
 **Blast radius of the main database.** Agents get their own `agents.kdbx`. A
 mistake or a prompt injection can only reach the secrets deliberately copied
@@ -63,8 +63,7 @@ around them:
 {
   "permissions": {
     "allow": [
-      "Bash(~/.claude/skills/keepassxc-secrets/scripts/kpsec:*)",
-      "Bash(~/.claude/skills/keepassxc-secrets/scripts/argologin:*)"
+      "Bash(~/.claude/skills/keepassxc-secrets/scripts/kpsec:*)"
     ],
     "deny": [
       "Bash(keepassxc-cli:*)",

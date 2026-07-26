@@ -8,9 +8,6 @@ It is the KeePassXC counterpart to the 1Password skills that already exist: same
 idea of `op://`-style secret references and `op run`-style injection, but backed
 by a local `.kdbx` file and your desktop keyring instead of a cloud vault.
 
-Ships with `argologin`, a working example of the pattern: logging in to several
-ArgoCD instances with admin passwords pulled straight from KeePassXC.
-
 ## The idea
 
 An agent should be able to *use* a credential without ever *seeing* it.
@@ -18,7 +15,6 @@ An agent should be able to *use* a credential without ever *seeing* it.
 ```bash
 kpsec run -e GITLAB_TOKEN=kp://gitlab/api -- glab api /user   # value only in the child's env
 kpsec check kp://gitlab/api                                   # OK  len=26 sha256:1f3a9c02
-argologin production                                          # logged in, no password in argv
 ```
 
 Anything the child process prints that matches a secret is replaced with
@@ -62,14 +58,13 @@ kp://<group>/<entry>[#<Attribute>]
 treated as public — they are not redacted from output.
 
 ```
-kp://argocd/production            # the password
-kp://argocd/production#UserName   # admin
+kp://gitlab/api            # the password
+kp://gitlab/api#UserName   # alice
 ```
 
 An `.env.tpl` holds references, not values, and is safe to commit:
 
 ```
-ARGOCD_AUTH_TOKEN=kp://argocd/production
 REGISTRY_USER=deployer
 REGISTRY_PASSWORD=kp://registry/deployer
 ```
@@ -92,29 +87,29 @@ kpsec run --env-file=.env.tpl -- docker compose up
 | `kpsec lock` | drop the cached master password |
 | `kpsec show-master` | show the master password in a GUI dialog (human-only) |
 
-## ArgoCD example
+## Building your own tools on it
 
-Describe your instances in `~/.config/kpsec/argocd.tsv` (tab-separated, see
-[`argocd.tsv.example`](skills/keepassxc-secrets/targets/argocd.tsv.example)):
+`kpsec_core.py` is importable. Resolve in-process and filter the child's output —
+that way the value never passes through an intermediate stdout:
 
+```python
+import os, subprocess, sys
+sys.path.insert(0, os.path.expanduser("~/.claude/skills/keepassxc-secrets/scripts"))
+import kpsec_core as kpsec
+
+cfg = kpsec.load_config()
+token = kpsec.resolve(cfg, "kp://gitlab/api")
+proc = subprocess.Popen(["glab", "api", "/user"],
+                        env={**os.environ, "GITLAB_TOKEN": token},
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+kpsec.stream_redacted(proc, [token])
+sys.exit(proc.wait())
 ```
-production	argocd.example.com	true	false	true	kp://argocd/production
-```
 
-```bash
-argologin list                            # aliases and their references
-argologin production                      # token written to ~/.config/argocd/config
-argocd app list --argocd-context production
-
-argologin production -- argocd app list   # stateless: token in a tmpfs config, deleted after
-```
-
-The token is obtained with `POST /api/v1/session` — the password travels in the
-request body, never in `argv` — and cached in the kernel keyring for 8 hours.
-
-Aliases marked `protected` refuse mutating verbs (`sync`, `delete`, `rollback`,
-`patch`, …) in stateless mode unless `ARGO_ALLOW_WRITE=1` is set. That guard
-exists so an agent cannot sync production on its own initiative.
+Useful entry points: `load_config()`, `resolve(cfg, ref, soft=False)`,
+`build_env(cfg, pairs)`, `stream_redacted(proc, secrets)`, and the keyring
+helpers `keyctl_read/keyctl_write/keyctl_unlink` for caching derived
+credentials such as session tokens.
 
 ## Security
 
@@ -132,9 +127,9 @@ The short version:
 
 ## Requirements
 
-`keepassxc-cli` ≥ 2.7, `python3` with `secretstorage` (and `PyYAML` for
-`argologin`); optionally `keyutils` for caching, `kdialog`/`zenity` for prompts.
-Linux with a Secret Service provider (KDE, GNOME, or any libsecret keyring).
+`keepassxc-cli` ≥ 2.7 and `python3` with `secretstorage`; optionally `keyutils`
+for caching and `kdialog`/`zenity` for prompts. Linux with a Secret Service
+provider (KDE, GNOME, or any libsecret keyring).
 
 ## License
 

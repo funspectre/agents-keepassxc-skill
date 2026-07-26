@@ -7,20 +7,18 @@
 | `keepassxc-cli` ≥ 2.7 | reads the database | yes |
 | `python3` | the scripts | yes |
 | `python3-secretstorage` | stores the master password in the desktop keyring | yes |
-| `python3-yaml` | writes the ArgoCD config | for `argologin` |
 | `keyctl` (keyutils) | in-memory cache with a TTL | optional |
 | `kdialog` or `zenity` | prompts and one-off displays | optional |
-| `argocd` CLI | ArgoCD itself | for `argologin` |
 
 ```bash
 # Debian/Ubuntu
-sudo apt install keepassxc python3-secretstorage python3-yaml keyutils
+sudo apt install keepassxc python3-secretstorage keyutils
 
 # openSUSE
-sudo zypper install keepassxc python3-SecretStorage python3-PyYAML keyutils
+sudo zypper install keepassxc python3-SecretStorage keyutils
 
 # Fedora
-sudo dnf install keepassxc python3-secretstorage python3-pyyaml keyutils
+sudo dnf install keepassxc python3-secretstorage keyutils
 ```
 
 ## First run

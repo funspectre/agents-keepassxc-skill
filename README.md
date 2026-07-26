@@ -45,6 +45,24 @@ child through its environment; output is filtered on the way back.
 
 ## Install
 
+### Dependencies
+
+| Platform | Install | Already there |
+|---|---|---|
+| Debian/Ubuntu | `sudo apt install keepassxc libsecret-tools keyutils` | — |
+| openSUSE | `sudo zypper install keepassxc secret-tool keyutils` | — |
+| Fedora | `sudo dnf install keepassxc libsecret keyutils` | — |
+| Arch | `sudo pacman -S keepassxc libsecret keyutils` | — |
+| macOS | `brew install keepassxc` | `security`, `osascript` |
+| Windows | `winget install KeePassXCTeam.KeePassXC` | Credential Manager, PowerShell |
+
+On Linux `secret-tool` (from libsecret) is what reads and writes the master key
+in the desktop keyring — without it `kpsec status` reports `keyring: none` and
+every call falls back to a prompt. `keyutils` is optional: it provides the
+short-lived in-memory cache.
+
+### The skill
+
 ```bash
 git clone https://github.com/jidckii/agents-keepassxc-skill.git
 cd agents-keepassxc-skill
@@ -54,6 +72,11 @@ kpsec init            # creates ~/.pass/agents.kdbx, stores the master key
 
 On Windows use `.\install.ps1` (same flags in PowerShell style: `-Project`,
 `-AllUser`, `-Copy`, `-List`).
+
+Prefer to have an agent do it? Paste
+[`agent-install-prompt.md`](agent-install-prompt.md) into your agent — it walks
+through the same steps and includes the rules that keep the agent from reading a
+secret into its own context.
 
 `install.sh` symlinks the skill directory, so `git pull` updates every harness at
 once (`--copy` if you would rather have independent copies). It is idempotent —
@@ -77,7 +100,44 @@ For AGENTS.md-only harnesses the installer appends a short pointer block between
 leaves the rest of the file alone.
 
 See [`references/setup.md`](skills/keepassxc-secrets/references/setup.md) for
-distribution packages and keyring specifics.
+keyring specifics.
+
+## Wiring it into your agent
+
+Installing the skill directory is usually enough: harnesses load `SKILL.md` on
+demand when a task mentions secrets. Two things are worth adding by hand.
+
+**A pointer in the always-loaded instructions.** A skill is only loaded once the
+agent decides it is relevant; a line in `AGENTS.md` or `CLAUDE.md` makes sure it
+never reaches for `keepassxc-cli` instead. `./install.sh --project` writes this
+block into a project's `AGENTS.md` automatically; for a global `CLAUDE.md` add
+something like:
+
+```markdown
+## Secrets
+
+Passwords and tokens for agent use live in a local KeePassXC database
+(`~/.pass/agents.kdbx`) and are reached only through `kpsec` — see the
+`keepassxc-secrets` skill. Never print a secret and never call `keepassxc-cli`
+directly. To use one: `kpsec run -e VAR=kp://group/entry -- <command>`.
+To check one: `kpsec check kp://group/entry`. New secrets are added by a human
+via `kpsec add`, which opens a GUI dialog.
+```
+
+**Permission rules**, so the wrappers are cheap to call and the direct route is
+closed. For Claude Code, in `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(kpsec:*)"],
+    "deny": ["Bash(keepassxc-cli:*)", "Read(//home/*/.pass/**)"]
+  }
+}
+```
+
+Equivalents for other harnesses are in
+[`references/security.md`](skills/keepassxc-secrets/references/security.md).
 
 ## Secret references
 

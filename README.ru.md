@@ -46,6 +46,24 @@ TTL; значения резолвятся внутри процесса и ух
 
 ## Установка
 
+### Зависимости
+
+| Платформа | Поставить | Уже есть в системе |
+|---|---|---|
+| Debian/Ubuntu | `sudo apt install keepassxc libsecret-tools keyutils` | — |
+| openSUSE | `sudo zypper install keepassxc secret-tool keyutils` | — |
+| Fedora | `sudo dnf install keepassxc libsecret keyutils` | — |
+| Arch | `sudo pacman -S keepassxc libsecret keyutils` | — |
+| macOS | `brew install keepassxc` | `security`, `osascript` |
+| Windows | `winget install KeePassXCTeam.KeePassXC` | Credential Manager, PowerShell |
+
+На Linux именно `secret-tool` (из libsecret) читает и пишет мастер-ключ в
+системном кошельке — без него `kpsec status` покажет `keyring: none`, и каждый
+вызов будет упираться в промпт. `keyutils` не обязателен: он даёт кратковременный
+кэш в памяти ядра.
+
+### Сам скилл
+
 ```bash
 git clone https://github.com/jidckii/agents-keepassxc-skill.git
 cd agents-keepassxc-skill
@@ -55,6 +73,10 @@ kpsec init            # создаёт ~/.pass/agents.kdbx и кладёт ма�
 
 На Windows — `.\install.ps1` (те же флаги в стиле PowerShell: `-Project`,
 `-AllUser`, `-Copy`, `-List`).
+
+Хочешь, чтобы установку сделал агент? Скопируй ему
+[`agent-install-prompt.md`](agent-install-prompt.md) — там те же шаги плюс
+правила, которые не дадут агенту втянуть секрет в свой контекст.
 
 `install.sh` ставит симлинк на каталог скилла, поэтому `git pull` обновляет его
 сразу во всех харнессах (`--copy`, если нужны независимые копии). Установка
@@ -77,8 +99,46 @@ kpsec init            # создаёт ~/.pass/agents.kdbx и кладёт ма�
 блок-указатель между маркерами `<!-- keepassxc-secrets:begin -->` — повторный
 запуск заменяет только этот блок, остальной файл не трогает.
 
-Пакеты для дистрибутивов и особенности кошельков — в
+Особенности кошельков — в
 [`references/setup.md`](skills/keepassxc-secrets/references/setup.md).
+
+## Подключение к агенту
+
+Обычно достаточно установить каталог скилла: харнессы подгружают `SKILL.md` по
+необходимости, когда в задаче заходит речь о секретах. Но две вещи стоит
+добавить руками.
+
+**Указатель в постоянно загруженных инструкциях.** Скилл подтягивается только
+после того, как агент сочтёт его релевантным; строчка в `AGENTS.md` или
+`CLAUDE.md` гарантирует, что он не полезет вместо этого за `keepassxc-cli`.
+В проектный `AGENTS.md` такой блок пишет `./install.sh --project`, а в
+глобальный `CLAUDE.md` добавь примерно это:
+
+```markdown
+## Секреты
+
+Пароли и токены для работы агентов лежат в локальной базе KeePassXC
+(`~/.pass/agents.kdbx`) и достаются только через `kpsec` — см. скилл
+`keepassxc-secrets`. Никогда не печатай секрет и не вызывай `keepassxc-cli`
+напрямую. Использовать секрет: `kpsec run -e VAR=kp://группа/запись -- <команда>`.
+Проверить: `kpsec check kp://группа/запись`. Новые секреты заводит человек через
+`kpsec add` — он открывает GUI-диалог.
+```
+
+**Правила доступа**, чтобы обёртки вызывались без лишних подтверждений, а прямой
+путь был закрыт. Для Claude Code в `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(kpsec:*)"],
+    "deny": ["Bash(keepassxc-cli:*)", "Read(//home/*/.pass/**)"]
+  }
+}
+```
+
+Аналоги для других харнессов — в
+[`references/security.md`](skills/keepassxc-secrets/references/security.md).
 
 ## Ссылки на секреты
 

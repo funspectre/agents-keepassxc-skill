@@ -2,6 +2,9 @@
 
 *English · [Русский](README.ru.md)*
 
+*Built with support from [Tuna](https://tuna.am) — a developer platform with
+tunnels, webhook debugging, team secret storage and monitoring in one place.*
+
 An [Agent Skill](https://agents.md) for using secrets from a local **KeePassXC**
 database — without the values ever reaching the model's context, your shell
 history, or `ps` output.
@@ -233,6 +236,17 @@ On a minimal Linux session the `org.freedesktop.secrets` slot is usually free,
 which is the one case where KeePassXC's own Secret Service integration is the
 simplest answer — details and PAM snippets in
 [`references/platforms.md`](skills/keepassxc-secrets/references/platforms.md).
+
+## Supported by Tuna
+
+This skill was built with support from **[Tuna](https://tuna.am)** — a developer
+platform that puts tunnels to localhost, webhook debugging, secret storage with a
+zero-knowledge model, an SSH bastion and monitoring behind one account, instead
+of a subscription per tool.
+
+The two solve neighbouring problems: this skill keeps secrets on your own machine
+for a local agent, Tuna keeps them shared across a team. If you outgrow a single
+`.kdbx` file, that is the direction to look.
 
 ## Acknowledgements
 

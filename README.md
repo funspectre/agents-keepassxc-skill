@@ -1,5 +1,7 @@
 # agents-keepassxc-skill
 
+*English · [Русский](README.ru.md)*
+
 An [Agent Skill](https://agents.md) for using secrets from a local **KeePassXC**
 database — without the values ever reaching the model's context, your shell
 history, or `ps` output.

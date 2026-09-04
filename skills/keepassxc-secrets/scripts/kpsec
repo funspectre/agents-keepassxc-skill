@@ -134,6 +134,13 @@ keyring_get() {
 }
 
 keyring_put() {
+    # A newline would end the `security -i` command line early and store a
+    # truncated value. Nothing produces one today — generated, typed into a
+    # dialog, or the first line of KPSEC_MASTER_COMMAND — so refuse rather than
+    # let a future path store a key that does not open the database.
+    case "$1" in
+        *$'\n'*) die "the master password contains a newline, which cannot be stored" 5 ;;
+    esac
     case "$(keyring_backend)" in
         keychain)
             # The whole command line goes in on `security -i`'s stdin, so the

@@ -2,4 +2,5 @@
 *.kdbx.lock
 .env
 .env.local
-fingerprint-salt
+__pycache__/
+*.pyc

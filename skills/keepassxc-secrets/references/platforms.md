@@ -15,8 +15,9 @@ Linux and macOS run `scripts/kpsec` (bash); Windows runs `scripts/kpsec.ps1`
 (PowerShell 5.1+, which ships with the OS). Neither needs a language runtime.
 
 `kpsec status` prints the backend actually in use. `KPSEC_KEYRING` pins one
-(`secretservice`, `keychain`, `keyring`, `none`); `none` disables the store
-entirely, so every call prompts.
+(`secretservice`, `keychain`, `none`); `none` disables the store entirely, so
+every call prompts or falls back to `KPSEC_MASTER_COMMAND`, and `kpsec init`
+shows the master password without storing it anywhere.
 
 ## Linux: desktops with a keyring
 
@@ -66,8 +67,10 @@ under Wayland. `kpsec` drives it over the Assuan protocol; no configuration
 needed beyond having one of `pinentry`, `pinentry-qt`, `pinentry-gnome3`,
 `pinentry-gtk-2`, `pinentry-curses` on PATH.
 
-For a headless or scripted session set `KPSEC_NO_GUI=1` — `kpsec` then fails with
-exit code 4 instead of trying to open a dialog.
+For a headless or scripted session set `KPSEC_NO_GUI=1` — `kpsec` then fails
+with exit code 4 instead of trying to open a dialog, unless
+`KPSEC_MASTER_COMMAND` gives it another way to the master password (see
+[`setup.md`](setup.md)).
 
 ## macOS
 

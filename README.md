@@ -24,7 +24,7 @@ An agent should be able to *use* a credential without ever *seeing* it.
 
 ```bash
 kpsec run -e GITLAB_TOKEN=kp://gitlab/api -- glab api /user   # value only in the child's env
-kpsec check kp://gitlab/api                                   # OK  len=26 sha256:1f3a9c02
+kpsec check kp://gitlab/api                                   # OK  len=26 fp:1f3a9c02
 ```
 
 No command here prints a secret: values are resolved inside `kpsec` and reach the
@@ -44,7 +44,8 @@ Three reasons, and they are the whole design:
 
 So: the master password lives in the desktop keyring (Secret Service), cached in
 the kernel keyring with a TTL; values are resolved in-process and handed to the
-child through its environment; output is filtered on the way back.
+child through its environment. The child's own output is not filtered — see
+`references/security.md`.
 
 ## Install
 
@@ -174,7 +175,7 @@ kpsec run --env-file=.env.tpl -- docker compose up
 | `kpsec init` | create the database, generate and store the master key |
 | `kpsec status` | where the master password comes from, does the database open |
 | `kpsec ls [group]` | list entries (never values) |
-| `kpsec check <ref>…` | verify a reference resolves — prints length and a sha256 prefix |
+| `kpsec check <ref>…` | verify a reference resolves — prints length and a local fingerprint |
 | `kpsec run [--env-file=F] [-e VAR=ref] -- cmd` | run a command with secrets in its environment |
 | `kpsec add <path> [-u user] [--url u] [-g]` | add or update an entry; the value is typed into a GUI dialog |
 | `kpsec clip <ref>` | copy a value to the clipboard for 15 seconds |

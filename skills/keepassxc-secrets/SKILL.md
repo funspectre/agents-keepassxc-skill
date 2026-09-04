@@ -53,7 +53,7 @@ The default attribute is `Password`.
 ```bash
 kpsec status                              # database, keyring backend, unlock check
 kpsec ls                                  # entries, without values
-kpsec check kp://gitlab/api               # OK + length and sha256 prefix
+kpsec check kp://gitlab/api               # OK + length and a local fingerprint
 kpsec run -e TOKEN=kp://gitlab/api -- glab api /user
 kpsec run --env-file .env.tpl -- docker compose up
 kpsec add gitlab/api -u alice             # value typed by a human in a GUI dialog
@@ -70,8 +70,13 @@ REGISTRY_USER=deployer
 REGISTRY_PASSWORD=kp://registry/deployer
 ```
 
-Commands an agent must **not** run: `kpsec add --stdin` (the value would land in
-argv) and `kpsec show-master`. Those are for the human at the keyboard.
+Commands an agent must **not** run: `kpsec add --stdin` (it reads the value from
+stdin, so the agent would have to be holding the plaintext to use it),
+`kpsec show-master` and `kpsec clip` (the clipboard reads back with `pbpaste`).
+Those are for the human at the keyboard.
+
+`kpsec check` prints a fingerprint, not a hash of the value: it is salted with a
+local file, so it identifies a value on this machine and means nothing off it.
 
 ## Adding a secret
 
@@ -89,7 +94,11 @@ command line. Verify with `kpsec check kp://<group>/<entry>`.
 
 `kpsec` doubles as a library. Sourcing it with `KPSEC_LIB=1` skips the command
 dispatch and exposes `resolve`, `kp`, `master_get` and the keyring helpers, so a
-wrapper can resolve a secret without it passing through an intermediate stdout:
+wrapper can resolve a secret without it passing through an intermediate stdout.
+
+This is for wrappers a human writes and reviews, **not** for an agent to
+assemble on the fly: the plaintext sits in a shell variable, one `echo` away
+from the transcript, which is exactly what the rule above exists to prevent.
 
 ```bash
 KPSEC_LIB=1 . "$HOME/.claude/skills/keepassxc-secrets/scripts/kpsec"
@@ -107,9 +116,10 @@ exec glab api /user
   `.kdbx`, re-point the key with `kpsec relocate <new-path>`.
 - Prompts need a graphical session; without one they are skipped rather than
   blocking. For headless runs set `KPSEC_NO_GUI=1` — the commands then fail with
-  exit code 4.
+  exit code 4, or 6 for `init` and `show-master`, which have nowhere to display
+  the master password. Supply it with `KPSEC_MASTER_COMMAND` instead.
 - Environment: `KPSEC_DB`, `KPSEC_TTL`, `KPSEC_CONFIG`, `KPSEC_KEYRING`
   (`secretservice` / `keychain` / `none`), `KPSEC_KEEPASSXC_CLI`,
-  `KPSEC_PROMPT_TIMEOUT`.
+  `KPSEC_MASTER_COMMAND`, `KPSEC_PROMPT_TIMEOUT`.
 - See `references/security.md` for the threat model, `references/setup.md` for
   installation and `references/platforms.md` for Linux/macOS/Windows specifics.

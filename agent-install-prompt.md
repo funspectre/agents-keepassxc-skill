@@ -38,7 +38,7 @@ Steps:
    which opens a GUI dialog for me to type the value into. Ask me for the group,
    entry name and username; never ask me to paste the secret into the chat.
    Then confirm with `kpsec check kp://<group>/<entry>` — it prints the length
-   and a hash prefix, not the value.
+   and a machine-local fingerprint, not the value.
 
 6. If this project should use it, run `./install.sh --project .` in the project
    directory: it adds the skill to `.cursor/skills` and `.agents/skills` and
@@ -47,7 +47,8 @@ Steps:
 Rules while doing this and afterwards:
 
 - Never run `keepassxc-cli` directly, never run `kpsec show-master`, never run
-  `kpsec add --stdin`. Those either print a secret or take one on the command line.
+  `kpsec clip`, never run `kpsec add --stdin`. Those either print a secret,
+  leave one on the clipboard, or require you to be holding the plaintext.
 - To use a secret in a command, always go through
   `kpsec run -e VAR=kp://group/entry -- <command>`. Never `VAR=$(...)`, never
   `--password <value>`.

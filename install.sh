@@ -94,7 +94,8 @@ install_into() {
 
 write_agents_block() {
     local file="$1" tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp "${TMPDIR:-/tmp}/keepassxc-secrets.XXXXXX")" ||
+        { printf '  ! cannot create a temporary file — %s not written\n' "$file" >&2; return 1; }
     if [[ -f "$file" ]]; then
         awk -v b="$BEGIN" -v e="$END" '
             $0 == b { skip = 1 } !skip { print } $0 == e { skip = 0 }
@@ -110,7 +111,14 @@ write_agents_block() {
         printf '%s\n' "$END"
     } >> "$tmp"
     mkdir -p "$(dirname "$file")"
-    mv "$tmp" "$file"
+    # Copy into place rather than mv: AGENTS.md keeps its own mode instead of
+    # inheriting mktemp's 0600.
+    if ! cat "$tmp" > "$file"; then
+        rm -f "$tmp"
+        printf '  ! cannot write %s\n' "$file" >&2
+        return 1
+    fi
+    rm -f "$tmp"
     printf '  + %s (pointer block)\n' "$file"
 }
 
@@ -199,7 +207,7 @@ if [[ -n "$PROJECT" ]]; then
     printf 'project scope (%s):\n' "$PROJECT"
     install_into "$PROJECT/.cursor/skills"
     install_into "$PROJECT/.agents/skills"
-    write_agents_block "$PROJECT/AGENTS.md"
+    write_agents_block "$PROJECT/AGENTS.md" || AGENTS_FAILED=1
 fi
 
 if [[ -n "$BIN_DIR" ]]; then
@@ -213,3 +221,5 @@ Next:
   $SRC/scripts/kpsec init
   $SRC/scripts/kpsec status
 EOF
+
+exit "${AGENTS_FAILED:-0}"

@@ -247,11 +247,20 @@ switch ($Command) {
             if ($pair -notmatch '=') { Die "malformed assignment: $pair (expected NAME=value)" 2 }
             $name, $value = $pair.Split('=', 2)
             if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { Die "not a usable variable name: $name" 2 }
-            $value = $value.Trim('"', "'")
+            # One matched pair only: .Trim() would eat every leading and
+            # trailing quote, and a value that merely ends in one keeps it.
+            if ($value.Length -ge 2 -and
+                (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+                 ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
             if ($value -like "kp://*") { $value = Resolve-Ref $value }
             Set-Item -Path "env:$name" -Value $value
         }
-        & $cmd[0] @($cmd[1..($cmd.Count - 1)])
+        # `1..0` counts *down* in PowerShell, so slicing a one-element $cmd
+        # handed the child a null argument and its own name.
+        if ($cmd.Count -gt 1) { & $cmd[0] @($cmd[1..($cmd.Count - 1)]) }
+        else { & $cmd[0] }
         exit $LASTEXITCODE
     }
 
@@ -352,15 +361,18 @@ switch ($Command) {
         if ($newDb -eq $Db) { Die "source and target paths are the same" 3 }
         $master = Read-MasterPassword
         if (-not $master) { Die "no master password known for $Db" 4 }
+        # Verify before touching Credential Manager. Storing first and rolling
+        # back with a delete destroyed whatever the target path already had —
+        # for the documented multi-database setup, another database's master
+        # password, gone on a mistyped path.
+        "$master" | & (Get-KeepassxcCli) @("db-info", "-q", "--", $newDb) 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Die "$newDb does not open with that master password — nothing changed" 5
+        }
         $oldTarget = $Target
         $script:Target = "kpsec master key:$newDb"
         Set-MasterInKeyring $master
         $script:Db = $newDb
-        Invoke-Kp -KpArgs @("db-info", "-q", $newDb) -Quiet | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Remove-MasterFromKeyring | Out-Null
-            Die "$newDb does not open with that master password — nothing changed" 5
-        }
         [KpsecCred]::Delete($oldTarget) | Out-Null
         Write-Host "relocated to $newDb"
         Write-Host "set KPSEC_DB if the new path is not the default"
@@ -388,5 +400,10 @@ Environment: KPSEC_DB, KPSEC_KEEPASSXC_CLI, KPSEC_MASTER_COMMAND, KPSEC_NO_GUI.
 KPSEC_MASTER_COMMAND is run by cmd.exe and its first line of output is used as
 the master password — for sessions with neither Credential Manager nor a dialog.
 "@ | Write-Host
+        # Help on request is success; an unknown command is a usage error, as in
+        # the bash script.
+        if ($Command -and $Command -notin @("-h", "--help", "help")) {
+            Die "unknown command: $Command (try kpsec --help)" 2
+        }
     }
 }

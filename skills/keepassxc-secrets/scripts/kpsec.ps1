@@ -14,11 +14,22 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Piping a string to a native command encodes it with $OutputEncoding, which is
+# ASCII by default in 5.1 — a non-ASCII password would reach keepassxc-cli
+# mangled.
+$OutputEncoding = New-Object System.Text.UTF8Encoding $false
 
 $Db = if ($env:KPSEC_DB) { $env:KPSEC_DB } else { Join-Path $HOME ".pass\agents.kdbx" }
 $Target = "kpsec master key:$Db"
+$SaltFile = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "kpsec\fingerprint-salt" }
+            else { Join-Path $HOME ".kpsec\fingerprint-salt" }
 
-function Die($msg, $code = 1) { Write-Error "kpsec: $msg"; exit $code }
+# Write-Error is a terminating error under ErrorActionPreference=Stop, so the
+# `exit $code` after it never ran and every documented exit code was lost.
+function Die($msg, $code = 1) {
+    [Console]::Error.WriteLine("kpsec: $msg")
+    exit $code
+}
 
 function Get-KeepassxcCli {
     if ($env:KPSEC_KEEPASSXC_CLI) { return $env:KPSEC_KEEPASSXC_CLI }
@@ -100,6 +111,13 @@ function Remove-MasterFromKeyring { try { [KpsecCred]::Delete($Target) } catch {
 function Read-MasterPassword {
     $master = Get-MasterFromKeyring
     if ($master) { return $master }
+    # No Credential Manager entry and no dialog — CI, a container — has no other
+    # way in, and the password must not come in on the command line.
+    if ($env:KPSEC_MASTER_COMMAND) {
+        $out = & cmd.exe /c $env:KPSEC_MASTER_COMMAND
+        if ($out) { return ([string[]]$out)[0].TrimEnd("`r", "`n") }
+        return $null
+    }
     if ($env:KPSEC_NO_GUI) { return $null }
     $cred = Get-Credential -UserName kpsec -Message "Master password for $(Split-Path -Leaf $Db)"
     if (-not $cred) { return $null }
@@ -130,10 +148,35 @@ function Resolve-Ref($ref, [switch]$Soft) {
     return $null
 }
 
-function Get-ShaPrefix($value) {
+# An unsalted hash prefix of a secret is an offline verifier for a guessed
+# value, and check output ends up in a transcript. The salt is local, so the
+# fingerprint answers "same value?" here and means nothing anywhere else.
+function Get-FingerprintSalt {
+    if (-not (Test-Path $SaltFile) -or (Get-Item $SaltFile).Length -eq 0) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $SaltFile -Parent) | Out-Null
+        $bytes = New-Object byte[] 32
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+        $hex = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+        Set-Content -Path $SaltFile -Value $hex -NoNewline
+    }
+    return (Get-Content $SaltFile -Raw)
+}
+
+function Get-Fingerprint($value) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
-    $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($value))
+    $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-FingerprintSalt) + $value))
     return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "").Substring(0, 8)
+}
+
+# reveal — put something in front of the human; non-zero/false means it was not
+# shown, so a caller must not treat it as read.
+function Show-ToUser($title, $text) {
+    if ($env:KPSEC_NO_GUI) { return $false }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show($text, $title) | Out-Null
+        return $true
+    } catch { return $false }
 }
 
 switch ($Command) {
@@ -162,7 +205,7 @@ switch ($Command) {
         foreach ($ref in $Rest) {
             $value = Resolve-Ref $ref -Soft
             if ($value) {
-                Write-Host ("OK   {0}  len={1} sha256:{2}" -f $ref, $value.Length, (Get-ShaPrefix $value))
+                Write-Host ("OK   {0}  len={1} fp:{2}" -f $ref, $value.Length, (Get-Fingerprint $value))
             } else {
                 Write-Host "FAIL $ref  (no such entry or attribute)"
                 $rc = 1
@@ -173,25 +216,37 @@ switch ($Command) {
 
     "run" {
         $pairs = @(); $envFile = $null; $i = 0
+        # A plain `while` with an inner `switch`: `break` in a switch leaves the
+        # switch, not the loop, so the old version spun forever on the first
+        # argument that was not an option (i.e. any `run` without `--`).
         while ($i -lt $Rest.Count) {
-            switch -regex ($Rest[$i]) {
-                '^--env-file$' { $envFile = $Rest[$i + 1]; $i += 2 }
-                '^--env-file=' { $envFile = $Rest[$i].Split('=', 2)[1]; $i++ }
-                '^(-e|--env)$' { $pairs += $Rest[$i + 1]; $i += 2 }
-                '^--$'         { $i++; break }
-                default        { break }
+            $arg = $Rest[$i]
+            if ($arg -eq '--') { $i++; break }
+            elseif ($arg -eq '--env-file') {
+                if ($i + 1 -ge $Rest.Count) { Die "--env-file needs a path" 2 }
+                $envFile = $Rest[$i + 1]; $i += 2
             }
-            if ($Rest[$i - 1] -eq '--') { break }
+            elseif ($arg -like '--env-file=*') {
+                $envFile = $arg.Substring('--env-file='.Length); $i++
+            }
+            elseif ($arg -eq '-e' -or $arg -eq '--env') {
+                if ($i + 1 -ge $Rest.Count) { Die "$arg needs NAME=value" 2 }
+                $pairs += $Rest[$i + 1]; $i += 2
+            }
+            else { break }
         }
-        $cmd = $Rest[$i..($Rest.Count - 1)]
-        if (-not $cmd) { Die "no command given after --" 2 }
+        if ($i -ge $Rest.Count) { Die "no command given after --" 2 }
+        $cmd = @($Rest[$i..($Rest.Count - 1)])
         if ($envFile) {
+            if (-not (Test-Path $envFile)) { Die "cannot read env file: $envFile" 2 }
             foreach ($line in Get-Content $envFile) {
-                if ($line.Trim() -and -not $line.StartsWith("#")) { $pairs += $line.Trim() }
+                if ($line.Trim() -and -not $line.Trim().StartsWith("#")) { $pairs += $line.Trim() }
             }
         }
         foreach ($pair in $pairs) {
+            if ($pair -notmatch '=') { Die "malformed assignment: $pair (expected NAME=value)" 2 }
             $name, $value = $pair.Split('=', 2)
+            if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { Die "not a usable variable name: $name" 2 }
             $value = $value.Trim('"', "'")
             if ($value -like "kp://*") { $value = Resolve-Ref $value }
             Set-Item -Path "env:$name" -Value $value
@@ -203,13 +258,23 @@ switch ($Command) {
     "add" {
         $path = $null; $username = $null; $url = $null; $generate = $false; $length = 32
         for ($i = 0; $i -lt $Rest.Count; $i++) {
-            switch ($Rest[$i]) {
-                { $_ -in "-u", "--username" } { $username = $Rest[++$i] }
-                "--url"                       { $url = $Rest[++$i] }
-                { $_ -in "-g", "--generate" } { $generate = $true }
-                { $_ -in "-L", "--length" }   { $length = $Rest[++$i] }
-                default                       { $path = $Rest[$i] }
+            $arg = $Rest[$i]
+            if ($arg -eq "-u" -or $arg -eq "--username") {
+                if ($i + 1 -ge $Rest.Count) { Die "$arg needs a username" 2 }
+                $username = $Rest[++$i]
             }
+            elseif ($arg -eq "--url") {
+                if ($i + 1 -ge $Rest.Count) { Die "--url needs a URL" 2 }
+                $url = $Rest[++$i]
+            }
+            elseif ($arg -eq "-g" -or $arg -eq "--generate") { $generate = $true }
+            elseif ($arg -eq "-L" -or $arg -eq "--length") {
+                if ($i + 1 -ge $Rest.Count) { Die "$arg needs a length" 2 }
+                $length = $Rest[++$i]
+                if ($length -notmatch '^[0-9]+$') { Die "$arg needs a number: $length" 2 }
+            }
+            elseif ($arg -like "-*") { Die "unknown option: $arg" 2 }
+            else { $path = $arg }
         }
         if (-not $path) { Die "usage: kpsec add <group>/<entry> [-u user] [--url u] [-g]" 2 }
 
@@ -247,33 +312,44 @@ switch ($Command) {
 
     "init" {
         if (Test-Path $Db) { Die "database already exists: $Db" 3 }
-        New-Item -ItemType Directory -Force -Path (Split-Path $Db -Parent) | Out-Null
         $cli = Get-KeepassxcCli
         $master = (& $cli generate -L 40 -l -U -n).Trim()
+        if (-not $master) { Die "cannot generate a master password" 5 }
+
+        # Show it before anything depends on it: the old order created the
+        # database, stored the key, then displayed it, so a Credential Manager
+        # failure left a database nobody could open.
+        if (-not (Show-ToUser "kpsec master password" (
+            "Master password for $Db`n`n$master`n`n" +
+            "Back it up in your main KeePassXC now — the database is worthless without it."))) {
+            Die "cannot show the master password: no dialog available, nothing created" 6
+        }
+
+        New-Item -ItemType Directory -Force -Path (Split-Path $Db -Parent) | Out-Null
         "$master`n$master" | & $cli db-create -q -p $Db
         if ($LASTEXITCODE -ne 0) { Die "db-create failed" 5 }
-        Set-MasterInKeyring $master
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show(
-            "Created $Db`n`nMaster password (back it up in your main KeePassXC):`n`n$master`n`n" +
-            "It is also stored in Credential Manager, which is where the scripts read it from.",
-            "kpsec master password") | Out-Null
-        Write-Host "created $Db; master key stored in Credential Manager, shown in a dialog"
+        try { Set-MasterInKeyring $master }
+        catch {
+            Write-Host "created $Db"
+            Die "could not store the master password in Credential Manager — keep the copy you were just shown" 4
+        }
+        Write-Host "created $Db; master password stored in Credential Manager"
     }
 
     "show-master" {
         $master = Get-MasterFromKeyring
         if (-not $master) { Die "master password not found in Credential Manager" 4 }
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show(
-            "Database: $Db`n`nMaster password:`n`n$master", "kpsec master password") | Out-Null
-        Write-Host "master key shown in a dialog"
+        if (-not (Show-ToUser "kpsec master password" "Database: $Db`n`nMaster password:`n`n$master")) {
+            Die "cannot show the master password: no dialog available" 6
+        }
+        Write-Host "master password shown to the user"
     }
 
     "relocate" {
         if (-not $Rest) { Die "usage: kpsec relocate <new-path>" 2 }
         $newDb = $Rest[0]
         if (-not (Test-Path $newDb)) { Die "no database at $newDb" 3 }
+        if ($newDb -eq $Db) { Die "source and target paths are the same" 3 }
         $master = Read-MasterPassword
         if (-not $master) { Die "no master password known for $Db" 4 }
         $oldTarget = $Target
@@ -307,7 +383,10 @@ kpsec — use secrets from a local KeePassXC database without printing them
   kpsec.ps1 show-master
 
 References: kp://<group>/<entry>[#<Attribute>], default attribute Password.
-Environment: KPSEC_DB, KPSEC_KEEPASSXC_CLI, KPSEC_NO_GUI.
+Environment: KPSEC_DB, KPSEC_KEEPASSXC_CLI, KPSEC_MASTER_COMMAND, KPSEC_NO_GUI.
+
+KPSEC_MASTER_COMMAND is run by cmd.exe and its first line of output is used as
+the master password — for sessions with neither Credential Manager nor a dialog.
 "@ | Write-Host
     }
 }

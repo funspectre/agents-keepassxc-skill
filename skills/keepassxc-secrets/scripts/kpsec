@@ -498,16 +498,21 @@ cmd_relocate() {
     [ "$new_db" != "$KPSEC_DB" ] || die "source and target paths are the same" 3
     master=$(master_get) || die "no master password known for $KPSEC_DB" 4
 
-    old_db=$KPSEC_DB
-    KPSEC_DB=$new_db
-    keyring_put "$master"
-    cache_put "$master"
-    if ! kp_quiet db-info -q "$new_db" >/dev/null; then
-        keyring_del || true
-        cache_drop || true
-        KPSEC_DB=$old_db
+    # Verify before touching the keyring. Writing first and rolling back with
+    # keyring_del deleted whatever the target path already had stored — for the
+    # documented multi-database setup, that is another database's master
+    # password, destroyed on a mistyped path.
+    if ! printf '%s\n' "$master" | "$(keepassxc_bin)" db-info -q "$new_db" >/dev/null 2>&1; then
         die "$new_db does not open with that master password — nothing changed" 5
     fi
+
+    old_db=$KPSEC_DB
+    KPSEC_DB=$new_db
+    if ! keyring_put "$master"; then
+        KPSEC_DB=$old_db
+        die "could not store the master password for $new_db — nothing changed" 4
+    fi
+    cache_put "$master"
     KPSEC_DB=$old_db
     keyring_del || true
     cache_drop || true

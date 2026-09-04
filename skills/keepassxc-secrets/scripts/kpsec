@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # kpsec — use secrets from a local KeePassXC database without printing them.
 # Linux and macOS. Windows: see kpsec.ps1. Kept compatible with bash 3.2 (macOS).
-set -euo pipefail
+# Strict mode for the CLI only: sourced with KPSEC_LIB=1 this would otherwise
+# turn on -e and pipefail in the caller's shell and keep them on.
+[ "${KPSEC_LIB:-}" = "1" ] || set -euo pipefail
 
 KPSEC_CONFIG="${KPSEC_CONFIG:-$HOME/.config/kpsec/config}"
 
@@ -325,14 +327,17 @@ cmd_status() {
 cmd_ls() { kp ls -q -R -f "$KPSEC_DB" "${1:-/}"; }
 
 cmd_check() {
-    local rc=0 ref value
+    local rc=0 ref value fp
     for ref in "$@"; do
-        if value=$(resolve_soft "$ref") && [ -n "$value" ]; then
-            printf 'OK   %s  len=%s fp:%s\n' "$ref" "${#value}" \
-                "$(printf '%s' "$value" | fingerprint)"
-        else
+        if ! value=$(resolve_soft "$ref"); then
             printf 'FAIL %s  (no such entry or attribute)\n' "$ref"
             rc=1
+        elif [ -z "$value" ]; then
+            # Resolved, but there is nothing in it — not the same as missing.
+            printf 'OK   %s  len=0 (the attribute is empty)\n' "$ref"
+        else
+            fp=$(printf '%s' "$value" | fingerprint) || fp='unavailable (no salt)'
+            printf 'OK   %s  len=%s fp:%s\n' "$ref" "${#value}" "$fp"
         fi
     done
     return $rc
@@ -424,7 +429,9 @@ cmd_add() {
         kp "$@" -g -L "$length" -l -U -n -s "$KPSEC_DB" "$path"
     else
         if [ "$from_stdin" = 1 ]; then
-            IFS= read -r value
+            # read returns 1 at EOF without a trailing newline even though it
+            # assigned, and under `set -e` that silently discarded the value.
+            IFS= read -r value || [ -n "$value" ]
         else
             value=$(prompt_secret "kpsec" "Value for $path") || die "no value entered" 3
         fi

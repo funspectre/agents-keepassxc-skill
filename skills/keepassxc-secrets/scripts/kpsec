@@ -214,31 +214,19 @@ prompt_secret() {
     return 1
 }
 
-# Returns non-zero when nothing was actually displayed, so callers can tell the
-# difference between "the user has read this" and "this went nowhere".
-show_message() {
-    [ -n "${KPSEC_NO_GUI:-}" ] && return 1
-    if [ "$(uname -s)" = "Darwin" ]; then
-        osa 'display dialog (item 2 of argv) with title (item 1 of argv) buttons {"OK"} default button "OK"' \
-            "$1" "$2" >/dev/null 2>&1 || return 1
-        return 0
-    fi
-    graphical || return 1
-    if command -v kdialog >/dev/null; then
-        with_timeout kdialog --title "$1" --msgbox "$2" >/dev/null 2>&1 || return 1
-    elif command -v zenity >/dev/null; then
-        with_timeout zenity --info --title "$1" --text "$2" >/dev/null 2>&1 || return 1
-    else
-        return 1
-    fi
-}
-
-# reveal <title> <text> — put something in front of the human. The terminal is a
-# fallback for the GUI, and /dev/tty rather than stdout so it cannot be captured
-# by a pipe into an agent's transcript. Non-zero means the text was not shown.
+# reveal <title> <text> — put the master password in front of the human, and
+# only the human. Non-zero means it was not shown, so a caller must not treat it
+# as read.
+#
+# The terminal, not a dialog: every dialog on every platform takes its text as a
+# command-line argument (`osascript … "$text"`, `kdialog --msgbox`,
+# `zenity --text`), which puts the password in `ps` output for as long as the
+# dialog waits to be clicked. /dev/tty keeps it out of argv and out of a pipe
+# into an agent's transcript. It does not survive a pty — anything recording the
+# terminal (script, tmux logging, an agent harness that allocates a pty) sees
+# it, so `init` and `show-master` belong in a terminal a human is sitting at.
 reveal() {
-    show_message "$1" "$2" && return 0
-    { printf '\n%s\n\n' "$2" > /dev/tty; } 2>/dev/null || return 1
+    { printf '\n%s\n%s\n\n' "$1" "$2" > /dev/tty; } 2>/dev/null || return 1
     return 0
 }
 

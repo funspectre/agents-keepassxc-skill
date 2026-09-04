@@ -84,7 +84,10 @@ to obtain the master password, in one of two ways:
 - a keyring entry written beforehand (`kpsec init` on a session that has one, or
   `secret-tool store` by hand), or
 - `KPSEC_MASTER_COMMAND` — a command whose first line of output is the master
-  password. It runs through a shell, so anything that prints the password works:
+  password. It runs through a shell, so anything that *fetches* the password
+  works. The command string itself is visible in `ps`, so it must fetch the
+  password, not contain it: `op read …`, `pass show …`, `cat` of a mode-0600
+  file. Never `echo <password>`.
 
 ```bash
 export KPSEC_NO_GUI=1
@@ -117,7 +120,9 @@ the old entry. A wrong target leaves everything untouched — including any key
 already stored for that path, which belongs to a different database.
 If the new location is not the default, export `KPSEC_DB` or record
 it in `~/.config/kpsec/config`, which is a plain `KEY=value` file (not shell:
-it is parsed, never sourced, and unknown keys are ignored with a warning):
+it is parsed, never sourced, and unknown keys are ignored with a warning).
+**Linux and macOS only** — `kpsec.ps1` reads no config file, so on Windows use
+the environment:
 
 ```
 KPSEC_DB=~/vault/agents.kdbx

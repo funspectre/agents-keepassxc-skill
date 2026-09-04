@@ -7,9 +7,26 @@ KPSEC_CONFIG="${KPSEC_CONFIG:-$HOME/.config/kpsec/config}"
 
 die() { printf 'kpsec: %s\n' "$1" >&2; exit "${2:-1}"; }
 
+# Strip one layer of quotes, but only a matched pair: a credential that merely
+# ends in a quote keeps it.
+unquote() {
+    local v=$1
+    case "$v" in
+        \"*\") v=${v#\"}; v=${v%\"} ;;
+        \'*\') v=${v#\'}; v=${v%\'} ;;
+    esac
+    printf '%s' "$v"
+}
+
 # The config is data, not code. Sourcing it would run whatever is in the file as
 # shell on every call — a write to it is then enough to defeat everything here.
 # Values already in the environment win, so `KPSEC_DB=… kpsec ls` still works.
+#
+# For the same reason the two settings that end up in front of an interpreter —
+# KPSEC_MASTER_COMMAND (goes to `sh -c`) and KPSEC_KEEPASSXC_CLI (is executed,
+# with the master password on its stdin) — are accepted from the environment
+# only. Honouring them here would hand arbitrary execution to anyone who can
+# append one line to this file, on every `kpsec status`, `ls` and `check`.
 read_config() {
     local line key value
     [ -f "$KPSEC_CONFIG" ] || return 0
@@ -20,16 +37,15 @@ read_config() {
         value=${line#*=}
         key=$(printf '%s' "$key" | tr -d '[:space:]')
         value=$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-        value=${value%\"}; value=${value#\"}
-        value=${value%\'}; value=${value#\'}
+        value=$(unquote "$value")
         case "$key" in
             KPSEC_DB)             [ -n "${KPSEC_DB:-}" ]             || KPSEC_DB=$value ;;
             KPSEC_TTL)            [ -n "${KPSEC_TTL:-}" ]            || KPSEC_TTL=$value ;;
             KPSEC_KEYRING)        [ -n "${KPSEC_KEYRING:-}" ]        || KPSEC_KEYRING=$value ;;
-            KPSEC_KEEPASSXC_CLI)  [ -n "${KPSEC_KEEPASSXC_CLI:-}" ]  || KPSEC_KEEPASSXC_CLI=$value ;;
-            KPSEC_MASTER_COMMAND) [ -n "${KPSEC_MASTER_COMMAND:-}" ] || KPSEC_MASTER_COMMAND=$value ;;
             KPSEC_NO_GUI)         [ -n "${KPSEC_NO_GUI:-}" ]         || KPSEC_NO_GUI=$value ;;
             KPSEC_PROMPT_TIMEOUT) [ -n "${KPSEC_PROMPT_TIMEOUT:-}" ] || KPSEC_PROMPT_TIMEOUT=$value ;;
+            KPSEC_MASTER_COMMAND|KPSEC_KEEPASSXC_CLI)
+                printf 'kpsec: %s is environment-only, ignoring it in %s\n' "$key" "$KPSEC_CONFIG" >&2 ;;
             *) printf 'kpsec: ignoring unknown config key: %s\n' "$key" >&2 ;;
         esac
     done < "$KPSEC_CONFIG"
@@ -352,8 +368,7 @@ cmd_run() {
             ''|[0-9]*|*[!A-Za-z0-9_]*) die "not a usable variable name: $name" 2 ;;
         esac
         value=${pair#*=}
-        value=${value%\"}; value=${value#\"}
-        value=${value%\'}; value=${value#\'}
+        value=$(unquote "$value")
         case "$value" in
             kp://*) value=$(resolve "$value") ;;
         esac

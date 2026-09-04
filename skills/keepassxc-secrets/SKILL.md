@@ -116,10 +116,18 @@ exec glab api /user
   `.kdbx`, re-point the key with `kpsec relocate <new-path>`.
 - Prompts need a graphical session; without one they are skipped rather than
   blocking. For headless runs set `KPSEC_NO_GUI=1` — the commands then fail with
-  exit code 4, or 6 for `init` and `show-master`, which have nowhere to display
-  the master password. Supply it with `KPSEC_MASTER_COMMAND` instead.
+  exit code 4 rather than waiting on a dialog. Supply the master password with
+  `KPSEC_MASTER_COMMAND` instead.
+- `init` and `show-master` print the master password to `/dev/tty`, never to
+  stdout and never to a dialog. `KPSEC_NO_GUI` does not suppress that: with no
+  terminal either they exit 6 and `init` creates nothing, but a terminal is a
+  terminal, so **anything recording one — `script`, tmux logging, an agent
+  harness that allocates a pty — records the password.** Both commands are for
+  a human at a real terminal.
 - Environment: `KPSEC_DB`, `KPSEC_TTL`, `KPSEC_CONFIG`, `KPSEC_KEYRING`
   (`secretservice` / `keychain` / `none`), `KPSEC_KEEPASSXC_CLI`,
-  `KPSEC_MASTER_COMMAND`, `KPSEC_PROMPT_TIMEOUT`.
+  `KPSEC_MASTER_COMMAND`, `KPSEC_PROMPT_TIMEOUT`. The config file accepts all of
+  these except `KPSEC_MASTER_COMMAND` and `KPSEC_KEEPASSXC_CLI`, which are
+  environment-only because both end up in front of an interpreter.
 - See `references/security.md` for the threat model, `references/setup.md` for
   installation and `references/platforms.md` for Linux/macOS/Windows specifics.

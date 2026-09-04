@@ -47,11 +47,11 @@ the install path for your harness (`~/.claude/skills/keepassxc-secrets`,
 `~/.codex/skills/keepassxc-secrets`, `<project>/.cursor/skills/keepassxc-secrets`,
 …). `./install.sh --list` prints them.
 
-`init` shows the generated master password once — in a GUI dialog, or on the
-terminal if there is no dialog — *before* it creates anything, and refuses to
-create the database at all if it cannot show it to you. Copy it into your main
-password manager: it is your only way back in if the desktop keyring is lost.
-To see it again: `kpsec show-master`.
+`init` shows the generated master password once, on your terminal — never in a
+dialog, which would take it as a command-line argument — *before* it creates
+anything, and refuses to create the database at all if it cannot show it to
+you. Copy it into your main password manager: it is your only way back in if
+the desktop keyring is lost. To see it again: `kpsec show-master`.
 
 To open the database by hand, point KeePassXC at `~/.pass/agents.kdbx`
 and use that master password.
@@ -92,9 +92,14 @@ export KPSEC_MASTER_COMMAND='op read op://vault/agents-kdbx/password'
 kpsec run -e TOKEN=kp://gitlab/api -- ./deploy.sh
 ```
 
-Without either, the commands exit with code 4 (and `init` and `show-master`
-with 6 — they have nowhere to display the password). Do not put the master
-password in a command line argument or a committed file.
+Without either, the commands exit with code 4. `init` and `show-master` exit 6
+instead, and `init` creates nothing: both display the master password on
+`/dev/tty` and refuse to run where there is no terminal to display it on.
+`KPSEC_NO_GUI` does not change that — it suppresses dialogs, not the terminal —
+so anything recording the terminal (`script`, tmux logging, an agent harness
+that allocates a pty) will capture the password. Run them yourself, in your own
+terminal. Do not put the master password in a command line argument or a
+committed file.
 
 ## Moving the database
 
@@ -106,9 +111,11 @@ mv ~/.pass/agents.kdbx ~/vault/agents.kdbx
 KPSEC_DB=~/.pass/agents.kdbx kpsec relocate ~/vault/agents.kdbx
 ```
 
-`relocate` copies the key to the new path, verifies the database actually opens
-with it, and only then removes the old entry — a wrong target leaves everything
-untouched. If the new location is not the default, export `KPSEC_DB` or record
+`relocate` first checks that the database at the new path actually opens with
+the master password it has, then stores the key under the new path and removes
+the old entry. A wrong target leaves everything untouched — including any key
+already stored for that path, which belongs to a different database.
+If the new location is not the default, export `KPSEC_DB` or record
 it in `~/.config/kpsec/config`, which is a plain `KEY=value` file (not shell:
 it is parsed, never sourced, and unknown keys are ignored with a warning):
 
@@ -119,8 +126,14 @@ KPSEC_TTL=900
 
 Values already in the environment win over the file, so
 `KPSEC_DB=… kpsec ls` still overrides it. Recognised keys are `KPSEC_DB`,
-`KPSEC_TTL`, `KPSEC_KEYRING`, `KPSEC_KEEPASSXC_CLI`, `KPSEC_MASTER_COMMAND`,
-`KPSEC_NO_GUI` and `KPSEC_PROMPT_TIMEOUT`.
+`KPSEC_TTL`, `KPSEC_KEYRING`, `KPSEC_NO_GUI` and `KPSEC_PROMPT_TIMEOUT`.
+
+`KPSEC_MASTER_COMMAND` and `KPSEC_KEEPASSXC_CLI` are **environment-only** and
+are ignored here with a warning. One is handed to `sh -c` and the other is
+executed with the master password on its stdin, so honouring them from a file
+would turn write access to that file into arbitrary execution on every `kpsec
+status`, `ls` and `check` — including the ones a permission allow-list is
+likely to approve without asking.
 
 ## Multiple databases
 

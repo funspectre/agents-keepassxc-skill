@@ -11,8 +11,9 @@ through its environment. No command in this skill prints a secret.
 readable on a default Linux install, and `ps` shows the arguments of anything
 running as you on macOS. Any `tool --password X` exposes the password for the
 duration of the call. Nothing here passes a secret as an argument: the master
-password reaches `keepassxc-cli`, `secret-tool`, `security` and `osascript` on
-stdin or through `argv` slots that hold no secret, and resolved values go
+password reaches `keepassxc-cli`, `secret-tool` and `security` on stdin, it is
+never handed to a dialog (which would take it as an argument — see `reveal` in
+the script), and resolved values go
 through the environment of the child process. Wrappers built with `KPSEC_LIB=1`
 should prefer an API call with the credential in the request body over a CLI
 flag.

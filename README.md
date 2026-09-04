@@ -181,7 +181,7 @@ kpsec run --env-file=.env.tpl -- docker compose up
 | `kpsec clip <ref>` | copy a value to the clipboard for 15 seconds |
 | `kpsec lock` | drop the cached master password |
 | `kpsec relocate <path>` | re-point the stored master key after moving the `.kdbx` file |
-| `kpsec show-master` | show the master password in a GUI dialog (human-only) |
+| `kpsec show-master` | show the master password on your terminal (human-only) |
 
 ## Building your own tools on it
 

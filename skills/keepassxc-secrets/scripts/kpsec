@@ -137,6 +137,7 @@ cache_get() {
 
 cache_put() {
     command -v keyctl >/dev/null || return 0
+    case "$KPSEC_TTL" in ''|*[!0-9]*) return 0 ;; esac
     [ "$KPSEC_TTL" -gt 0 ] || return 0
     local id
     id=$(printf '%s' "$1" | keyctl padd user "$(cache_desc)" @u 2>/dev/null) || return 0
@@ -313,9 +314,11 @@ cmd_run() {
     local env_file="" pairs="" line pair name value
     while [ $# -gt 0 ]; do
         case "$1" in
-            --env-file) env_file=$2; shift 2 ;;
+            --env-file) [ $# -ge 2 ] || die "--env-file needs a path" 2
+                        env_file=$2; shift 2 ;;
             --env-file=*) env_file=${1#*=}; shift ;;
-            -e|--env) pairs="$pairs$2"$'\n'; shift 2 ;;
+            -e|--env) [ $# -ge 2 ] || die "$1 needs NAME=value" 2
+                      pairs="$pairs$2"$'\n'; shift 2 ;;
             --) shift; break ;;
             *) break ;;
         esac
@@ -323,6 +326,7 @@ cmd_run() {
     [ $# -gt 0 ] || die "no command given after --" 2
 
     if [ -n "$env_file" ]; then
+        [ -r "$env_file" ] || die "cannot read env file: $env_file" 2
         while IFS= read -r line || [ -n "$line" ]; do
             case "$line" in ''|\#*) continue ;; esac
             pairs="$pairs$line"$'\n'
@@ -331,7 +335,14 @@ cmd_run() {
 
     while IFS= read -r pair; do
         [ -n "$pair" ] || continue
+        case "$pair" in
+            *=*) ;;
+            *) die "malformed assignment: $pair (expected NAME=value)" 2 ;;
+        esac
         name=${pair%%=*}
+        case "$name" in
+            ''|[0-9]*|*[!A-Za-z0-9_]*) die "not a usable variable name: $name" 2 ;;
+        esac
         value=${pair#*=}
         value=${value%\"}; value=${value#\"}
         value=${value%\'}; value=${value#\'}
@@ -350,10 +361,14 @@ cmd_add() {
     local group prefix part verb value master
     while [ $# -gt 0 ]; do
         case "$1" in
-            -u|--username) username=$2; shift 2 ;;
-            --url) url=$2; shift 2 ;;
+            -u|--username) [ $# -ge 2 ] || die "$1 needs a username" 2
+                           username=$2; shift 2 ;;
+            --url) [ $# -ge 2 ] || die "--url needs a URL" 2
+                   url=$2; shift 2 ;;
             -g|--generate) generate=1; shift ;;
-            -L|--length) length=$2; shift 2 ;;
+            -L|--length) [ $# -ge 2 ] || die "-L needs a length" 2
+                         case "$2" in ''|*[!0-9]*) die "-L needs a number: $2" 2 ;; esac
+                         length=$2; shift 2 ;;
             --stdin) from_stdin=1; shift ;;
             -*) die "unknown option: $1" 2 ;;
             *) path=$1; shift ;;
@@ -395,6 +410,7 @@ cmd_add() {
 
 cmd_clip() {
     parse_ref "$1"
+    case "${2:-15}" in ''|*[!0-9]*) die "clip timeout must be a number: $2" 2 ;; esac
     kp clip -q -a "$REF_ATTR" "$KPSEC_DB" "$REF_PATH" "${2:-15}"
     printf 'copied %s to clipboard for %ss\n' "$1" "${2:-15}"
 }

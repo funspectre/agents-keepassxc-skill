@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # kpsec — use secrets from a local KeePassXC database without printing them.
 # Linux and macOS. Windows: see kpsec.ps1. Kept compatible with bash 3.2 (macOS).
-# Strict mode for the CLI only: sourced with KPSEC_LIB=1 this would otherwise
-# turn on -e and pipefail in the caller's shell and keep them on.
-[ "${KPSEC_LIB:-}" = "1" ] || set -euo pipefail
+# Strict mode for the CLI only: when sourced as a library this would otherwise
+# turn on -e and pipefail in the caller's shell and keep them on. Detected from
+# BASH_SOURCE rather than KPSEC_LIB, so an exported KPSEC_LIB=1 cannot silently
+# strip strict mode from a normally executed kpsec.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then KPSEC_SOURCED=1; else KPSEC_SOURCED=0; fi
+[ "$KPSEC_SOURCED" = 1 ] || set -euo pipefail
 
 KPSEC_CONFIG="${KPSEC_CONFIG:-$HOME/.config/kpsec/config}"
 
@@ -64,7 +67,7 @@ PROMPT_TIMEOUT="${KPSEC_PROMPT_TIMEOUT:-120}"
 # salt "inside" the config file itself and make every fingerprint unavailable.
 case "$KPSEC_CONFIG" in
     */*) SALT_FILE="${KPSEC_CONFIG%/*}/fingerprint-salt" ;;
-    *)   SALT_FILE="fingerprint-salt" ;;
+    *)   SALT_FILE="$HOME/.kpsec-fingerprint-salt" ;;
 esac
 
 keepassxc_bin() {
@@ -125,9 +128,30 @@ keyring_backend() {
     else printf 'none\n'; fi
 }
 
+# `security -w` prints the password as hex whenever the stored bytes are not
+# printable ASCII, so a master password with an accent or a tab read back as its
+# own hex and the database never unlocked. `-g` is the only way to tell that
+# apart from a password that merely looks like hex ("deadbeef"): it prefixes
+# real binary with 0x. It is used only as that yes/no test — the value itself
+# still comes from -w, so nothing depends on parsing -g's quoting.
+keychain_get() {
+    local out
+    out=$(security find-generic-password -w -s "$KEYRING_SERVICE" -a "$KPSEC_DB" 2>/dev/null) || return 1
+    case "$out" in
+        ''|*[!0-9a-fA-F]*) printf '%s' "$out"; return 0 ;;
+    esac
+    [ $(( ${#out} % 2 )) -eq 0 ] || { printf '%s' "$out"; return 0; }
+    if security find-generic-password -g -s "$KEYRING_SERVICE" -a "$KPSEC_DB" 2>&1 |
+            grep -q '^password: 0x'; then
+        printf '%b' "$(printf '%s' "$out" | sed 's/../\\x&/g')"
+    else
+        printf '%s' "$out"
+    fi
+}
+
 keyring_get() {
     case "$(keyring_backend)" in
-        keychain) security find-generic-password -w -s "$KEYRING_SERVICE" -a "$KPSEC_DB" 2>/dev/null ;;
+        keychain) keychain_get ;;
         secretservice) secret-tool lookup application kpsec db "$KPSEC_DB" 2>/dev/null ;;
         *) return 1 ;;
     esac
@@ -201,6 +225,8 @@ cache_drop() {
 
 graphical() { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }
 
+# Inert without coreutils, which a stock macOS does not have: the command then
+# runs unbounded and KPSEC_PROMPT_TIMEOUT does nothing.
 with_timeout() {
     if command -v timeout >/dev/null; then timeout "$PROMPT_TIMEOUT" "$@"
     elif command -v gtimeout >/dev/null; then gtimeout "$PROMPT_TIMEOUT" "$@"
@@ -446,7 +472,11 @@ cmd_add() {
         if [ "$from_stdin" = 1 ]; then
             # read returns 1 at EOF without a trailing newline even though it
             # assigned, and under `set -e` that silently discarded the value.
-            IFS= read -r value || [ -n "$value" ]
+            # `read` returns 1 at EOF without a trailing newline even though it
+            # assigned. Ignore its status entirely and let the emptiness check
+            # below report the real problem, so empty stdin exits 3 with a
+            # reason instead of dying silently under set -e.
+            IFS= read -r value || true
         else
             value=$(prompt_secret "kpsec" "Value for $path") || die "no value entered" 3
         fi
@@ -572,9 +602,12 @@ the master password — for sessions with neither a keyring nor a dialog.
 EOF
 }
 
-# Sourced as a library (KPSEC_LIB=1 . kpsec) other tools get resolve(), kp(),
-# master_get() and the keyring helpers without a value ever hitting stdout.
-[ "${KPSEC_LIB:-}" = "1" ] && return 0
+# Sourced as a library (`. kpsec`, with or without the older KPSEC_LIB=1) other
+# tools get resolve(), kp(), master_get() and the keyring helpers without a
+# value ever hitting stdout. Callers must check the status of resolve(): strict
+# mode belongs to the caller's shell, so a failed lookup returns rather than
+# aborting.
+[ "$KPSEC_SOURCED" = 1 ] && return 0
 
 case "${1:-}" in
     status) shift; cmd_status "$@" ;;

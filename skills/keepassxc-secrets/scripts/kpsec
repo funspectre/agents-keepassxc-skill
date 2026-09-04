@@ -377,35 +377,51 @@ cmd_clip() {
 }
 
 cmd_init() {
-    local master
+    local master backend
     [ -e "$KPSEC_DB" ] && die "database already exists: $KPSEC_DB" 3
-    mkdir -p "$(dirname "$KPSEC_DB")"
-    master=$("$(keepassxc_bin)" generate -L 40 -l -U -n)
-    printf '%s\n%s\n' "$master" "$master" |
-        "$(keepassxc_bin)" db-create -q -p "$KPSEC_DB" || die "db-create failed" 5
-    chmod 600 "$KPSEC_DB"
-    keyring_put "$master"
-    cache_put "$master"
-    show_message "kpsec master password" "Created $KPSEC_DB
+    backend=$(keyring_backend)
+    master=$("$(keepassxc_bin)" generate -L 40 -l -U -n) ||
+        die "cannot generate a master password" 5
+    [ -n "$master" ] || die "cannot generate a master password" 5
 
-Master password (back it up in your main KeePassXC):
+    # Show the password before anything depends on it. A database whose master
+    # password was neither shown nor stored cannot be opened by anyone, and the
+    # old order — create, store, show — lost it on any keyring failure.
+    reveal "kpsec master password" "Master password for $KPSEC_DB:
 
 $master
 
-It is also stored in the system keyring, which is where the scripts read it from."
-    printf 'created %s; master key stored in the keyring, shown in a GUI dialog\n' "$KPSEC_DB"
+Back it up in your main KeePassXC now — the database is worthless without it." ||
+        die "cannot show the master password: no dialog and no terminal, nothing created" 6
+
+    (umask 077; mkdir -p "$(dirname "$KPSEC_DB")") || die "cannot create $(dirname "$KPSEC_DB")" 5
+    (umask 077; printf '%s\n%s\n' "$master" "$master" |
+        "$(keepassxc_bin)" db-create -q -p "$KPSEC_DB") || die "db-create failed" 5
+    chmod 600 "$KPSEC_DB"
+
+    if [ "$backend" = none ]; then
+        printf 'created %s\n' "$KPSEC_DB"
+        printf 'no keyring backend: every call will prompt for the master password\n' >&2
+        return 0
+    fi
+    if ! keyring_put "$master"; then
+        printf 'created %s\n' "$KPSEC_DB"
+        die "could not store the master password in the keyring — keep the copy you were just shown" 4
+    fi
+    cache_put "$master"
+    printf 'created %s; master password stored in the keyring\n' "$KPSEC_DB"
 }
 
 cmd_show_master() {
     local master
     master=$(cache_get) || master=$(keyring_get) ||
         die "master password found neither in the cache nor in the keyring" 4
-    show_message "kpsec master password" "Database: $KPSEC_DB
+    reveal "kpsec master password" "Database: $KPSEC_DB
 
 Master password:
 
-$master"
-    printf 'master key shown in a GUI dialog\n'
+$master" || die "cannot show the master password: no dialog and no terminal" 6
+    printf 'master password shown to the user\n'
 }
 
 cmd_relocate() {

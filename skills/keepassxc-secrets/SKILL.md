@@ -92,7 +92,7 @@ command line. Verify with `kpsec check kp://<group>/<entry>`.
 
 ## Building tools on top
 
-`kpsec` doubles as a library. Sourcing it with `KPSEC_LIB=1` skips the command
+`kpsec` doubles as a library. Sourcing it (`. kpsec`) skips the command
 dispatch and exposes `resolve`, `kp`, `master_get` and the keyring helpers, so a
 wrapper can resolve a secret without it passing through an intermediate stdout.
 
@@ -101,9 +101,12 @@ assemble on the fly: the plaintext sits in a shell variable, one `echo` away
 from the transcript, which is exactly what the rule above exists to prevent.
 
 ```bash
-KPSEC_LIB=1 . "$HOME/.claude/skills/keepassxc-secrets/scripts/kpsec"
+. "$HOME/.claude/skills/keepassxc-secrets/scripts/kpsec"
 
-token=$(resolve "kp://gitlab/api")     # stays in this shell's memory
+# Check the status: strict mode belongs to your shell, not to kpsec, so a failed
+# lookup returns and the script would otherwise run with an empty credential.
+token=$(resolve "kp://gitlab/api") || exit 1
+[ -n "$token" ] || exit 1
 export GITLAB_TOKEN="$token"           # export, not `env VAR=… cmd` — argv is public
 exec glab api /user
 ```

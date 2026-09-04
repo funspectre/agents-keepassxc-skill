@@ -5,7 +5,10 @@
 **Secrets ending up in the model context.** Anything an agent's shell prints is
 read by the model and may be persisted in a transcript. Every path here keeps
 values out of stdout: they are resolved inside `kpsec` and passed to the child
-through its environment. No command in this skill prints a secret.
+through its environment. No command prints a resolved secret, and the two that
+print the master password — `init` and `show-master` — write it to `/dev/tty`,
+which a pipe does not capture but a recorded terminal does. Both are for a human
+at a terminal, not for an agent.
 
 **Secrets ending up in process arguments.** `/proc/<pid>/cmdline` is world
 readable on a default Linux install, and `ps` shows the arguments of anything
@@ -14,14 +17,14 @@ duration of the call. Nothing here passes a secret as an argument: the master
 password reaches `keepassxc-cli`, `secret-tool` and `security` on stdin, it is
 never handed to a dialog (which would take it as an argument — see `reveal` in
 the script), and resolved values go
-through the environment of the child process. Wrappers built with `KPSEC_LIB=1`
+through the environment of the child process. Wrappers that source `kpsec`
 should prefer an API call with the credential in the request body over a CLI
 flag.
 
 **Secrets ending up on disk.** The master password is never written to a file,
 and the cache lives in kernel memory with a TTL. The one file `kpsec` does
-write is the fingerprint salt (`fingerprint-salt`, 0600) next to the config,
-which is not derived from any secret.
+write is the fingerprint salt (`fingerprint-salt`, 0600, next to the config),
+which is random and not derived from any secret.
 
 **Blast radius of the main database.** Agents get their own `agents.kdbx`. A
 mistake or a prompt injection can only reach the secrets deliberately copied
@@ -54,10 +57,11 @@ there, not a lifetime of personal credentials.
 - **`kpsec clip`.** The value goes to the session clipboard, where `pbpaste`,
   `wl-paste` or `xclip -o` will read it back. It is a convenience for the human
   at the keyboard, not a way to hand a secret to an agent.
-- **Wrappers built with `KPSEC_LIB=1`.** Sourcing `kpsec` as a library puts the
-  plaintext in a shell variable, one `echo` away from the transcript. Write
-  those by hand for a specific job; they are not something an agent should be
-  generating on the fly.
+- **Wrappers that source `kpsec`.** Library mode puts the plaintext in a shell
+  variable, one `echo` away from the transcript, and `resolve` returns a status
+  rather than aborting — an unchecked wrapper runs its command with an empty
+  credential. Write those by hand for a specific job; they are not something an
+  agent should be generating on the fly.
 - **Secrets already leaked elsewhere** — CI variables, dotfiles, shell history
   from before the migration.
 

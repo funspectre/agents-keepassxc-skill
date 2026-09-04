@@ -12,7 +12,8 @@ language runtime to install.
 | `security` | same, via the login Keychain | ships with macOS |
 | Credential Manager | same, via the native API | ships with Windows |
 | `keyctl` (keyutils) | in-memory cache with a TTL (Linux only) | optional |
-| `kdialog`, `zenity` or `pinentry` | prompts and one-off displays | optional |
+| `kdialog`, `zenity` or `pinentry` | password prompts | optional |
+| `timeout`/`gtimeout` (coreutils) | bounds prompts and keyring writes | optional |
 
 ```bash
 # Debian/Ubuntu

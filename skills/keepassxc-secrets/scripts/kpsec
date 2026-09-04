@@ -137,14 +137,21 @@ with_timeout() {
     else "$@"; fi
 }
 
+# osa <applescript> [arg...] — values reach the script through `argv`. Pasting
+# them into the script text lets anything containing a quote inject AppleScript,
+# and a secret in the script text is also a secret in osascript's argv.
+osa() {
+    local script=$1
+    shift
+    with_timeout osascript -e 'on run argv' -e "$script" -e 'end run' "$@"
+}
+
 prompt_secret() {
-    local title=$1 text=$2 out exe
+    local title=$1 text=$2 exe
     [ -n "${KPSEC_NO_GUI:-}" ] && return 1
     if [ "$(uname -s)" = "Darwin" ]; then
-        out=$(with_timeout osascript -e \
-            "display dialog \"$text\" with title \"$title\" default answer \"\" with hidden answer" \
-            2>/dev/null) || return 1
-        printf '%s\n' "${out#*text returned:}"
+        osa 'return text returned of (display dialog (item 2 of argv) with title (item 1 of argv) default answer "" with hidden answer)' \
+            "$title" "$text" 2>/dev/null || return 1
         return 0
     fi
     if graphical && command -v kdialog >/dev/null; then
@@ -167,20 +174,32 @@ prompt_secret() {
     return 1
 }
 
+# Returns non-zero when nothing was actually displayed, so callers can tell the
+# difference between "the user has read this" and "this went nowhere".
 show_message() {
-    [ -n "${KPSEC_NO_GUI:-}" ] && return 0
+    [ -n "${KPSEC_NO_GUI:-}" ] && return 1
     if [ "$(uname -s)" = "Darwin" ]; then
-        with_timeout osascript -e \
-            "display dialog \"$2\" with title \"$1\" buttons {\"OK\"} default button \"OK\"" \
-            >/dev/null 2>&1 || true
+        osa 'display dialog (item 2 of argv) with title (item 1 of argv) buttons {"OK"} default button "OK"' \
+            "$1" "$2" >/dev/null 2>&1 || return 1
         return 0
     fi
-    graphical || return 0
+    graphical || return 1
     if command -v kdialog >/dev/null; then
-        with_timeout kdialog --title "$1" --msgbox "$2" >/dev/null 2>&1 || true
+        with_timeout kdialog --title "$1" --msgbox "$2" >/dev/null 2>&1 || return 1
     elif command -v zenity >/dev/null; then
-        with_timeout zenity --info --title "$1" --text "$2" >/dev/null 2>&1 || true
+        with_timeout zenity --info --title "$1" --text "$2" >/dev/null 2>&1 || return 1
+    else
+        return 1
     fi
+}
+
+# reveal <title> <text> — put something in front of the human. The terminal is a
+# fallback for the GUI, and /dev/tty rather than stdout so it cannot be captured
+# by a pipe into an agent's transcript. Non-zero means the text was not shown.
+reveal() {
+    show_message "$1" "$2" && return 0
+    { printf '\n%s\n\n' "$2" > /dev/tty; } 2>/dev/null || return 1
+    return 0
 }
 
 # -------------------------------------------------------------- keepassxc ---

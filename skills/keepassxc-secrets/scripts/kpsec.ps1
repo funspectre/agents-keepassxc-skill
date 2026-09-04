@@ -143,7 +143,7 @@ function Split-Ref($ref) {
 
 function Resolve-Ref($ref, [switch]$Soft) {
     $r = Split-Ref $ref
-    $value = Invoke-Kp -KpArgs @("show", "-q", "-s", "-a", $r.Attr, $Db, $r.Path) -Quiet:$Soft
+    $value = Invoke-Kp -KpArgs @("show", "-q", "-s", "-a", $r.Attr, "--", $Db, $r.Path) -Quiet:$Soft
     if ($value) { return ($value -join "`n").TrimEnd("`r", "`n") }
     return $null
 }
@@ -188,7 +188,7 @@ switch ($Command) {
         Write-Host "keyring:        credential manager ($key)"
         Write-Host "cache:          unsupported on this platform"
         if (Test-Path $Db) {
-            Invoke-Kp -KpArgs @("db-info", "-q", $Db) -Quiet | Out-Null
+            Invoke-Kp -KpArgs @("db-info", "-q", "--", $Db) -Quiet | Out-Null
             $ok = if ($LASTEXITCODE -eq 0) { "ok" } else { "FAILED" }
             Write-Host "unlock:         $ok"
         }
@@ -196,7 +196,7 @@ switch ($Command) {
 
     "ls" {
         $group = if ($Rest) { $Rest[0] } else { "/" }
-        Invoke-Kp -KpArgs @("ls", "-q", "-R", "-f", $Db, $group)
+        Invoke-Kp -KpArgs @("ls", "-q", "-R", "-f", "--", $Db, $group)
     }
 
     "check" {
@@ -292,7 +292,7 @@ switch ($Command) {
             $prefix = ""
             foreach ($part in ($group -split '[\\/]')) {
                 $prefix = if ($prefix) { "$prefix/$part" } else { $part }
-                Invoke-Kp -KpArgs @("mkdir", "-q", $Db, $prefix) -Quiet | Out-Null
+                Invoke-Kp -KpArgs @("mkdir", "-q", "--", $Db, $prefix) -Quiet | Out-Null
             }
         }
         $verb = if (Resolve-Ref "kp://$path#Title" -Soft) { "edit" } else { "add" }
@@ -301,11 +301,11 @@ switch ($Command) {
         if ($url) { $kpArgs += @("--url", $url) }
 
         if ($generate) {
-            Invoke-Kp -KpArgs ($kpArgs + @("-g", "-L", "$length", "-l", "-U", "-n", "-s", $Db, $path))
+            Invoke-Kp -KpArgs ($kpArgs + @("-g", "-L", "$length", "-l", "-U", "-n", "-s", "--", $Db, $path))
         } else {
             $cred = Get-Credential -UserName kpsec -Message "Value for $path"
             if (-not $cred) { Die "no value entered" 3 }
-            Invoke-Kp -KpArgs ($kpArgs + @("-p", $Db, $path)) `
+            Invoke-Kp -KpArgs ($kpArgs + @("-p", "--", $Db, $path)) `
                       -ExtraStdin ($cred.GetNetworkCredential().Password + "`n")
         }
         Write-Host "$($verb)ed $path"
@@ -315,7 +315,7 @@ switch ($Command) {
         if (-not $Rest) { Die "usage: kpsec clip <ref> [seconds]" 2 }
         $r = Split-Ref $Rest[0]
         $seconds = if ($Rest.Count -gt 1) { $Rest[1] } else { "15" }
-        Invoke-Kp -KpArgs @("clip", "-q", "-a", $r.Attr, $Db, $r.Path, $seconds)
+        Invoke-Kp -KpArgs @("clip", "-q", "-a", $r.Attr, "--", $Db, $r.Path, $seconds)
         Write-Host "copied $($Rest[0]) to clipboard for ${seconds}s"
     }
 

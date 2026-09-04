@@ -59,6 +59,26 @@ sha_prefix() {
     else shasum -a 256 | cut -c1-8; fi
 }
 
+# A bare hash prefix of a secret is an offline verifier: 32 bits is enough to
+# confirm a guess against anything low-entropy, and `check` output ends up in a
+# transcript. Salting it with a local secret keeps the "are these two the same
+# value?" use without publishing anything an attacker can test against.
+fingerprint_salt() {
+    if [ ! -s "$SALT_FILE" ]; then
+        (umask 077
+         mkdir -p "$(dirname "$SALT_FILE")"
+         dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' > "$SALT_FILE"
+        ) || return 1
+        [ -s "$SALT_FILE" ] || return 1
+    fi
+    cat "$SALT_FILE"
+}
+
+# fingerprint — reads a value on stdin, prints a salted, local-only prefix.
+fingerprint() {
+    { fingerprint_salt || return 1; cat; } | sha_prefix
+}
+
 # ---------------------------------------------------------------- keyring ---
 # The master key is keyed by database path, so a moved .kdbx needs `relocate`.
 
@@ -279,8 +299,8 @@ cmd_check() {
     local rc=0 ref value
     for ref in "$@"; do
         if value=$(resolve_soft "$ref") && [ -n "$value" ]; then
-            printf 'OK   %s  len=%s sha256:%s\n' "$ref" "${#value}" \
-                "$(printf '%s' "$value" | sha_prefix)"
+            printf 'OK   %s  len=%s fp:%s\n' "$ref" "${#value}" \
+                "$(printf '%s' "$value" | fingerprint)"
         else
             printf 'FAIL %s  (no such entry or attribute)\n' "$ref"
             rc=1

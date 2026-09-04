@@ -234,6 +234,14 @@ master_get() {
     if master=$(keyring_get) && [ -n "$master" ]; then
         cache_put "$master"; printf '%s' "$master"; return 0
     fi
+    # A machine with no keyring and no dialog — CI, a container — has no other
+    # way in, and the master password must not come in on the command line.
+    if [ -n "${KPSEC_MASTER_COMMAND:-}" ]; then
+        master=$(sh -c "$KPSEC_MASTER_COMMAND") || return 1
+        master=${master%%$'\n'*}
+        [ -n "$master" ] || return 1
+        cache_put "$master"; printf '%s' "$master"; return 0
+    fi
     master=$(prompt_secret "kpsec" "Master password for $(basename "$KPSEC_DB")") || return 1
     [ -n "$master" ] || return 1
     cache_put "$master"
@@ -511,7 +519,10 @@ kpsec — use secrets from a local KeePassXC database without printing them
 
 References: kp://<group>/<entry>[#<Attribute>], default attribute Password.
 Environment: KPSEC_DB, KPSEC_TTL, KPSEC_CONFIG, KPSEC_KEYRING, KPSEC_KEEPASSXC_CLI,
-KPSEC_NO_GUI, KPSEC_PROMPT_TIMEOUT.
+KPSEC_MASTER_COMMAND, KPSEC_NO_GUI, KPSEC_PROMPT_TIMEOUT.
+
+KPSEC_MASTER_COMMAND is run by a shell and its first line of output is used as
+the master password — for sessions with neither a keyring nor a dialog.
 EOF
 }
 
